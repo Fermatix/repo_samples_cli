@@ -1,0 +1,31 @@
+[project]
+name = "repo-sampler"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = [
+    "httpx>=0.27",
+    "typer>=0.12",
+    "loguru>=0.7",
+    "rich>=13",
+    "pydantic>=2",
+    "pydantic-settings>=2",
+    "jsonlines>=4",
+    "pyarrow>=16",
+]
+
+[project.scripts]
+repo-sampler = "repo_sampler.main:app"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/repo_sampler"]
+
+[tool.uv]
+dev-dependencies = [
+    "pytest>=8",
+    "pytest-asyncio>=0.23",
+    "respx>=0.21",
+]
