@@ -8,6 +8,9 @@ build/
 .mypy_cache/
 .ruff_cache/
 .pytest_cache/
+.vscode
+.metals
+.claude
 
 output/
 /tmp/repo-sampler/

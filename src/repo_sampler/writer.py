@@ -6,55 +6,79 @@ from pathlib import Path
 
 import jsonlines
 
-from .selector import RepoSample
-
-
-def write_deliverable(sample: RepoSample, summary_md: str, output_dir: Path) -> None:
-    repo_dir = output_dir / sample.repo_name
-    repo_dir.mkdir(parents=True, exist_ok=True)
-
-    for sf in sample.files:
-        dest = repo_dir / "samples" / sf.path
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        dest.write_text(sf.content, encoding="utf-8")
-
-    (repo_dir / "repo_summary.md").write_text(summary_md, encoding="utf-8")
+from .agent import AgentResult
 
 
 def append_jsonl(
-    sample: RepoSample,
-    summary_md: str,
+    result: AgentResult,
     path: Path,
-    model: str,
-    files_found: int,
-    files_scored: int,
-    commit_sha: str = "unknown",
 ) -> None:
-    test_loc = sum(sf.loc_taken for sf in sample.files if sf.layer == "test")
-    test_share = test_loc / sample.total_loc if sample.total_loc else 0.0
+    test_loc = sum(f.loc_taken for f in result.files if f.layer == "test")
+    test_share = test_loc / result.total_loc if result.total_loc else 0.0
 
     record = {
-        "repo_url": sample.repo_url,
-        "repo_name": sample.repo_name,
-        "language": sample.language,
-        "total_loc": sample.total_loc,
-        "file_count": len(sample.files),
+        "repo_url": result.repo_url,
+        "repo_name": result.repo_name,
+        "language": "",
+        "total_loc": result.total_loc,
+        "file_count": len(result.files),
         "test_share": round(test_share, 4),
         "files": [
             {
-                "path": sf.path,
-                "layer": sf.layer,
-                "rank": sf.rank,
-                "loc_taken": sf.loc_taken,
-                "is_partial": sf.is_partial,
+                "path": f.path,
+                "layer": f.layer,
+                "rank": f.rank,
+                "loc_taken": f.loc_taken,
+                "is_partial": f.is_partial,
             }
-            for sf in sample.files
+            for f in result.files
         ],
-        "repo_summary": summary_md,
+        "repo_summary": result.summary_md,
         "meta": {
-            "files_found": files_found,
-            "files_scored": files_scored,
+            "model": "",           # filled by caller
+            "agent_iterations": result.agent_iterations,
+            "bash_calls": result.bash_calls,
+            "sampled_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        },
+    }
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with jsonlines.open(path, mode="a") as writer:
+        writer.write(record)
+
+
+def append_jsonl_with_meta(
+    result: AgentResult,
+    path: Path,
+    model: str,
+    commit_sha: str = "unknown",
+) -> None:
+    test_loc = sum(f.loc_taken for f in result.files if f.layer == "test")
+    test_share = test_loc / result.total_loc if result.total_loc else 0.0
+
+    record = {
+        "repo_url": result.repo_url,
+        "repo_name": result.repo_name,
+        "folder_name": result.folder_name,
+        "language": "",
+        "total_loc": result.total_loc,
+        "file_count": len(result.files),
+        "test_share": round(test_share, 4),
+        "files": [
+            {
+                "path": f.path,
+                "layer": f.layer,
+                "rank": f.rank,
+                "loc_taken": f.loc_taken,
+                "is_partial": f.is_partial,
+            }
+            for f in result.files
+        ],
+        "repo_summary": result.summary_md,
+        "meta": {
             "model": model,
+            "agent_iterations": result.agent_iterations,
+            "bash_calls": result.bash_calls,
             "sampled_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
             "commit_sha": commit_sha,
         },
@@ -81,9 +105,8 @@ def write_parquet(output_dir: Path) -> None:
     if not records:
         return
 
-    flat_records = []
-    for r in records:
-        flat_records.append({
+    flat_records = [
+        {
             "repo_url": r.get("repo_url", ""),
             "repo_name": r.get("repo_name", ""),
             "language": r.get("language", ""),
@@ -93,7 +116,9 @@ def write_parquet(output_dir: Path) -> None:
             "repo_summary": r.get("repo_summary", ""),
             "files_json": json.dumps(r.get("files", [])),
             "meta_json": json.dumps(r.get("meta", {})),
-        })
+        }
+        for r in records
+    ]
 
     table = pa.table({
         "repo_url": [r["repo_url"] for r in flat_records],
