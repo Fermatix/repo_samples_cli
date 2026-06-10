@@ -11,6 +11,8 @@ build/
 .vscode
 .metals
 .claude
+.DS_Store
+.csv
 
 output/
 /tmp/repo-sampler/

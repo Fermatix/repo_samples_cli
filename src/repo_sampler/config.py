@@ -24,6 +24,14 @@ class Settings(BaseSettings):
     # Concurrency
     clone_workers: int = 10
 
+    # Anonymization (local Claude Code agent)
+    anonymizer_model: str = "claude-haiku-4-5"
+    anonymizer_workers: int = 12            # parallel `claude -p` subprocesses
+    anonymizer_timeout: int = 900          # seconds per directory
+    anonymizer_permission_mode: str = "acceptEdits"
+    anonymizer_effort: str = "low"        # thinking effort: low|medium|high|max ("" = model default)
+    anonymizer_max_budget_usd: float = 0.0  # 0 = no cap; pass --max-budget-usd only if > 0
+
     # Paths
     clone_dir: str = "/tmp/repo-sampler/clones"
     output_dir: str = "./output"

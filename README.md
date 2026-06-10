@@ -30,13 +30,27 @@ https://gitlab.com/org/group/repo2
 # строки начинающиеся с # — игнорируются
 ```
 
-### 4. Запуск
+### 4. Запуск сбора
 
 ```bash
 uv run repo-sampler run repos.txt
 ```
 
-Результаты сохраняются в `./output/`.
+Результаты сохраняются в `./output/`. Уже обработанные репозитории при повторном запуске пропускаются автоматически.
+
+### 5. Анонимизация (отдельный шаг)
+
+Сбор выполняется дешёвой моделью и **не** гарантирует анонимность. После сбора запустите анонимизацию — она проходит по каждой папке и через **локального агента Claude (Sonnet 4.6)** заменяет все упоминания компаний, брендов, продуктов, юрлиц, физлиц, имён, телефонов, почт и сайтов на нейтральные плейсхолдеры (код и его структура сохраняются без изменений; кириллический текст сам по себе остаётся).
+
+```bash
+uv run repo-sampler anonymize ./output
+```
+
+> Использует вашу текущую авторизацию Claude Code (`claude` CLI должен быть установлен и залогинен). Отдельный API-ключ не требуется.
+
+Для каждой папки сохраняется детерминированный аудит изменений (через `diff`, без LLM):
+- `anonymization.diff` — точный список всех изменённых участков (было → стало);
+- `anonymization_report.json` — сводка по файлам (число правок, стоимость).
 
 ---
 
@@ -48,9 +62,11 @@ output/
 ├── samples.jsonl                    # метаданные всех репозиториев
 └── gitlab.com__owner__repo/
     ├── repo_summary.md              # обзор репозитория
-    ├── agent_log.json               # лог действий агента
-    └── samples/                     # отобранные файлы (verbatim)
-        └── <оригинальный/путь/файла>
+    ├── agent_log.json               # лог действий агента сбора
+    ├── samples/                     # отобранные файлы (verbatim)
+    │   └── <оригинальный/путь/файла>
+    ├── anonymization.diff           # ← после анонимизации: что изменено
+    └── anonymization_report.json    # ← после анонимизации: сводка
 ```
 
 ---
@@ -58,20 +74,21 @@ output/
 ## Дополнительные опции
 
 ```bash
-# Пропустить уже обработанные репозитории (проверяет samples.jsonl)
-uv run repo-sampler run repos.txt --resume
+# Принудительно переобработать уже собранные репозитории
+uv run repo-sampler run repos.txt --force
 
 # Только клонирование без LLM (проверка доступности репозиториев)
 uv run repo-sampler run repos.txt --dry-run
 
-# Изменить язык (по умолчанию python)
-uv run repo-sampler run repos.txt --language typescript
-
 # Полный прогон одного репозитория с выводом в консоль
 uv run repo-sampler show-sample https://github.com/owner/repo
 
-# Параллелизм (по умолчанию 10)
+# Параллелизм сбора (по умолчанию 10)
 uv run repo-sampler run repos.txt --workers 20
+
+# Анонимизация: параллелизм, другая модель, переобработка
+uv run repo-sampler anonymize ./output --workers 5
+uv run repo-sampler anonymize ./output --force
 ```
 
 ---
@@ -80,9 +97,13 @@ uv run repo-sampler run repos.txt --workers 20
 
 | Переменная | По умолчанию | Описание |
 |-----------|-------------|----------|
-| `OPENROUTER_API_KEY` | — | **Обязательно.** Ключ OpenRouter |
-| `AGENT_MODEL` | `deepseek/deepseek-v4-flash` | Модель для агента |
+| `OPENROUTER_API_KEY` | — | **Обязательно для сбора.** Ключ OpenRouter |
+| `AGENT_MODEL` | `deepseek/deepseek-v4-flash` | Модель для агента сбора |
 | `TARGET_LOC` | `5000` | Целевой объём сэмпла (строк кода) |
 | `CLONE_WORKERS` | `10` | Параллельных клонирований |
 | `CLONE_DIR` | `/tmp/repo-sampler/clones` | Директория для клонов |
 | `OUTPUT_DIR` | `./output` | Директория вывода |
+| `ANONYMIZER_MODEL` | `claude-sonnet-4-6` | Модель локального агента анонимизации |
+| `ANONYMIZER_WORKERS` | `3` | Параллельных агентов анонимизации |
+| `ANONYMIZER_TIMEOUT` | `900` | Таймаут на папку, сек |
+| `ANONYMIZER_MAX_BUDGET_USD` | `0` | Лимит стоимости на папку ($, 0 = без лимита) |

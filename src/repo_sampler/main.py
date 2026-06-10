@@ -13,6 +13,7 @@ from rich.console import Console
 from rich.table import Table
 
 from .agent import AgentResult, AuthError, run_agent, url_to_folder_name
+from .anonymizer import run_anonymizer
 from .cloner import CloneError, cleanup_repo, clone_repo
 from .config import Settings
 from .writer import append_jsonl_with_meta, write_parquet
@@ -317,6 +318,63 @@ def show_sample(
                     cleanup_repo(clone_dest)
 
     asyncio.run(_run())
+
+
+@app.command()
+def anonymize(
+    output: Path = typer.Argument(Path("./output"), help="Directory with sample folders"),
+    workers: Optional[int] = typer.Option(None, help="Parallel claude agents"),
+    model: Optional[str] = typer.Option(None, help="Override anonymizer model"),
+    effort: Optional[str] = typer.Option(None, help="Thinking effort: low|medium|high|max"),
+    force: bool = typer.Option(False, help="Re-anonymize dirs already marked done"),
+) -> None:
+    """Anonymize all sample deliverables in OUTPUT using a local Claude agent per directory."""
+    _setup_logging(output)
+    settings = Settings()
+    if workers:
+        settings.anonymizer_workers = workers
+    if model:
+        settings.anonymizer_model = model
+    if effort:
+        settings.anonymizer_effort = effort
+
+    results = asyncio.run(run_anonymizer(output, settings, force))
+    _print_anonymize_table(results)
+
+
+def _print_anonymize_table(results: list[dict]) -> None:
+    table = Table(title="Anonymization")
+    table.add_column("Folder", style="cyan")
+    table.add_column("Status")
+    table.add_column("Files", justify="right")
+    table.add_column("Cost $", justify="right")
+
+    ok = 0
+    errors = 0
+    total_cost = 0.0
+
+    for r in results:
+        if r.get("status") == "ok":
+            ok += 1
+            cost = r.get("cost")
+            if cost:
+                total_cost += cost
+            table.add_row(
+                r["folder"],
+                "ok",
+                str(r.get("files_changed", "-")),
+                f"{cost:.4f}" if cost is not None else "-",
+            )
+        else:
+            errors += 1
+            table.add_row(r["folder"], "ERROR", "-", "-", style="red")
+
+    console.print(table)
+    console.print(
+        f"Anonymized: {ok}/{len(results)}  |  "
+        f"Errors: {errors}  |  "
+        f"Total cost: ${total_cost:.4f}"
+    )
 
 
 if __name__ == "__main__":
