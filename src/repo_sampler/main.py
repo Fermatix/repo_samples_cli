@@ -16,6 +16,7 @@ from .agent import AgentResult, AuthError, run_agent, url_to_folder_name
 from .anonymizer import run_anonymizer
 from .cloner import CloneError, cleanup_repo, clone_repo, rewrite_url
 from .config import Settings
+from .languages import canonicalize
 from .writer import append_jsonl_with_meta, remove_record, write_parquet
 
 app = typer.Typer(help="CLI tool for extracting representative code samples from git repositories.")
@@ -73,6 +74,43 @@ def _write_error(path: Path, url: str, stage: str, error: str) -> None:
             "error": error,
             "ts": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         })
+
+
+def _primary_share(result: AgentResult) -> float:
+    if not result.total_loc or not result.primary_language:
+        return 0.0
+    ploc = sum(
+        f.loc_taken for f in result.files if f.language == result.primary_language
+    )
+    return ploc / result.total_loc
+
+
+def _result_failure(result: AgentResult, settings: Settings) -> tuple[str, str] | None:
+    """(stage, message) when the agent result must be rejected, else None."""
+    if result.total_loc == 0:
+        return ("agent_empty", "agent saved 0 LOC")
+    if result.primary_language:
+        share = _primary_share(result)
+        if share < settings.primary_share_min:
+            ploc = round(share * result.total_loc)
+            return (
+                "agent_no_primary_lang",
+                f"primary language '{result.primary_language}': {ploc} LOC "
+                f"({share:.0%}) below the {settings.primary_share_min:.0%} minimum",
+            )
+    return None
+
+
+def _validate_primary_language(value: Optional[str]) -> Optional[str]:
+    if value is None:
+        return None
+    canonical = canonicalize(value)
+    if canonical is None:
+        raise typer.BadParameter(
+            f"Unknown language '{value}'. Use the scc name, e.g. 'JavaScript', "
+            f"'TypeScript', 'PHP', 'C++', 'Vue', 'Twig Template', 'Plain Text'."
+        )
+    return canonical
 
 
 async def _get_commit_sha(repo_path: Path) -> str:
@@ -140,8 +178,9 @@ async def _process_repo(
                 client=client,
             )
 
-            if result.total_loc == 0:
-                logger.warning(f"[{repo_name}] agent saved 0 LOC, retrying once...")
+            failure = _result_failure(result, settings)
+            if failure:
+                logger.warning(f"[{repo_name}] {failure[1]}, retrying once...")
                 result = await run_agent(
                     repo_path=clone_dest,
                     repo_url=url,
@@ -149,18 +188,20 @@ async def _process_repo(
                     settings=settings,
                     client=client,
                 )
+                failure = _result_failure(result, settings)
 
-            if result.total_loc == 0:
-                # Do not record the failure in samples.jsonl: a zero-LOC record
-                # would mark the repo as processed and skip it on every re-run.
-                logger.error(f"[{repo_name}] agent saved 0 LOC after retry, not recording")
-                _write_error(errors_path, url, "agent_empty", "agent saved 0 LOC after retry")
+            if failure:
+                fail_stage, fail_msg = failure
+                # Do not record the failure in samples.jsonl: the record would
+                # mark the repo as processed and skip it on every re-run.
+                logger.error(f"[{repo_name}] {fail_msg} after retry, not recording")
+                _write_error(errors_path, url, fail_stage, f"{fail_msg} after retry")
                 # A --force re-run cleared the old deliverable folder; its old
                 # manifest record would now point at an empty folder.
                 if remove_record(output_dir / "samples.jsonl", url):
                     logger.warning(f"[{repo_name}] removed stale samples.jsonl record")
                 return {"repo_url": url, "repo_name": repo_name, "folder_name": folder_name,
-                        "error": "agent saved 0 LOC after retry"}
+                        "error": f"{fail_msg} after retry"}
 
             stage = "write"
             commit_sha = await _get_commit_sha(clone_dest)
@@ -183,6 +224,8 @@ async def _process_repo(
                 "file_count": len(result.files),
                 "test_share": test_share,
                 "iterations": result.agent_iterations,
+                "primary_language": result.primary_language,
+                "primary_share": _primary_share(result),
             }
 
         except AuthError as e:
@@ -220,6 +263,13 @@ def run(
     ssh_port: Optional[int] = typer.Option(
         None, help="Non-standard SSH port of your git server (used with --url-scheme ssh)"
     ),
+    primary_language: Optional[str] = typer.Option(
+        None,
+        "--primary-language",
+        help="Force the primary language for ALL repos in the file (scc name, e.g. "
+        "'JavaScript', 'C++', 'Twig Template'). Overrides auto-detection for "
+        "agent instructions and result validation.",
+    ),
 ) -> None:
     """Process repos from file. Already completed repos are skipped automatically (use --force to override)."""
     output.mkdir(parents=True, exist_ok=True)
@@ -228,6 +278,9 @@ def run(
 
     if workers:
         settings.clone_workers = workers
+    canonical_lang = _validate_primary_language(primary_language)
+    if canonical_lang:
+        settings.primary_language_override = canonical_lang
 
     repos = _load_repos(repos_file)
     jsonl_path = output / "samples.jsonl"
@@ -287,6 +340,7 @@ def _print_summary_table(results: list[dict]) -> None:
     table.add_column("LOC", justify="right")
     table.add_column("Files", justify="right")
     table.add_column("Test share", justify="right")
+    table.add_column("Primary", justify="right")
     table.add_column("Iters", justify="right")
 
     errors = 0
@@ -295,16 +349,19 @@ def _print_summary_table(results: list[dict]) -> None:
     for r in results:
         display = r.get("folder_name") or r.get("repo_name", "?")
         if "error" in r:
-            table.add_row(display, "ERROR", "-", "-", "-", style="red")
+            table.add_row(display, "ERROR", "-", "-", "-", "-", style="red")
             errors += 1
         elif r.get("dry_run"):
-            table.add_row(display, "dry-run", "-", "-", "-", style="dim")
+            table.add_row(display, "dry-run", "-", "-", "-", "-", style="dim")
         else:
             loc = r.get("total_loc", 0)
             files = r.get("file_count", 0)
             test_share = r.get("test_share", 0)
             iters = r.get("iterations", "-")
-            table.add_row(display, str(loc), str(files), f"{test_share:.0%}", str(iters))
+            plang = r.get("primary_language") or "-"
+            primary = f"{plang} {r.get('primary_share', 0):.0%}" if plang != "-" else "-"
+            table.add_row(display, str(loc), str(files), f"{test_share:.0%}",
+                          primary, str(iters))
             total_loc += loc
 
     console.print(table)
@@ -332,11 +389,20 @@ def show_sample(
     ssh_port: Optional[int] = typer.Option(
         None, help="Non-standard SSH port of your git server (used with --url-scheme ssh)"
     ),
+    primary_language: Optional[str] = typer.Option(
+        None,
+        "--primary-language",
+        help="Force the primary language (scc name, e.g. 'JavaScript', 'C++'). "
+        "Overrides auto-detection for agent instructions and result validation.",
+    ),
 ) -> None:
     """Full agent run for one repo. Writes deliverable to output/ and prints summary."""
     output.mkdir(parents=True, exist_ok=True)
     _setup_logging(output)
     settings = Settings()
+    canonical_lang = _validate_primary_language(primary_language)
+    if canonical_lang:
+        settings.primary_language_override = canonical_lang
 
     repo_name = repo_url.rstrip("/").split("/")[-1]
     clone_dest = Path(settings.clone_dir) / url_to_folder_name(repo_url)
@@ -361,19 +427,28 @@ def show_sample(
                 table.add_column("Rank", justify="right")
                 table.add_column("Path", style="cyan")
                 table.add_column("Layer")
+                table.add_column("Lang")
                 table.add_column("LOC", justify="right")
                 table.add_column("Partial")
 
                 for sf in sorted(result.files, key=lambda f: f.rank):
                     table.add_row(
-                        str(sf.rank), sf.path, sf.layer,
+                        str(sf.rank), sf.path, sf.layer, sf.language or "-",
                         str(sf.loc_taken), "yes" if sf.is_partial else "no",
                     )
 
                 console.print(table)
+                primary_note = ""
+                if result.primary_language:
+                    primary_note = (
+                        f" | primary: {result.primary_language} "
+                        f"{_primary_share(result):.0%} "
+                        f"(min {settings.primary_share_min:.0%})"
+                    )
                 console.print(
                     f"\nTotal: {result.total_loc} LOC, {len(result.files)} files | "
                     f"iterations: {result.agent_iterations} | bash calls: {result.bash_calls}"
+                    f"{primary_note}"
                 )
             finally:
                 if not keep_clones and clone_dest.exists():

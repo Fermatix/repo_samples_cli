@@ -65,3 +65,47 @@ def test_remove_record(tmp_path):
     assert [r["repo_url"] for r in _read(path)] == ["https://h.com/o/b"]
     assert remove_record(path, "https://h.com/o/a") is False  # already gone
     assert remove_record(tmp_path / "missing.jsonl", "x") is False
+
+
+def test_record_carries_language_fields(tmp_path):
+    from repo_sampler.agent import AgentSavedFile
+
+    path = tmp_path / "samples.jsonl"
+    result = _result("https://h.com/o/lang", 100)
+    result.primary_language = "PHP"
+    result.repo_lang_distribution = {"PHP": 0.7, "JavaScript": 0.3}
+    result.lang_stats_source = "walk"
+    result.files = [
+        AgentSavedFile(path="a.php", layer="business", loc_taken=80,
+                       is_partial=False, rank=1, language="PHP"),
+        AgentSavedFile(path="b.js", layer="util", loc_taken=20,
+                       is_partial=False, rank=2, language="JavaScript"),
+    ]
+    append_jsonl_with_meta(result, path, model="m")
+
+    record = _read(path)[0]
+    assert record["language"] == "PHP"
+    assert record["sample_lang_distribution"] == {"PHP": 0.8, "JavaScript": 0.2}
+    assert record["files"][0]["language"] == "PHP"
+    assert record["meta"]["repo_lang_distribution"] == {"PHP": 0.7, "JavaScript": 0.3}
+    assert record["meta"]["lang_stats_source"] == "walk"
+    assert record["meta"]["primary_forced"] is False
+
+
+def test_parquet_tolerates_old_records_without_language_fields(tmp_path):
+    import json as _json
+
+    from repo_sampler.writer import write_parquet
+
+    path = tmp_path / "samples.jsonl"
+    old_record = {
+        "repo_url": "https://h.com/o/old", "repo_name": "old",
+        "folder_name": "h.com__o__old", "language": "", "total_loc": 100,
+        "file_count": 1, "test_share": 0.0,
+        "files": [{"path": "a.py", "layer": "business", "rank": 1,
+                   "loc_taken": 100, "is_partial": False}],
+        "repo_summary": "s", "meta": {},
+    }
+    path.write_text(_json.dumps(old_record) + "\n")
+    write_parquet(tmp_path)
+    assert (tmp_path / "samples.parquet").exists()

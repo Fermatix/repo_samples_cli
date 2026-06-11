@@ -252,3 +252,161 @@ async def test_auth_error_on_spending_limit(status_code):
                         settings=settings,
                         client=client,
                     )
+
+
+# ---------------------------------------------------------------------------
+# Language-aware sampling
+# ---------------------------------------------------------------------------
+
+def _summary_call(call_id: str) -> dict:
+    return _tool_call(call_id, "write_summary", {
+        "content": "## Repo\n\nA\n\n## Structure\n\nB\n\n## What was sampled\n\nC\n\n## Notes\n\nD"
+    })
+
+
+@pytest.mark.asyncio
+async def test_language_distribution_injected_into_first_message():
+    """The agent's first user message carries the distribution + PRIMARY LANGUAGE."""
+    with tempfile.TemporaryDirectory() as tmp:
+        repo = Path(tmp) / "repo"
+        out = Path(tmp) / "out"
+        (repo / "src").mkdir(parents=True)
+        (repo / "src" / "app.js").write_text("var x;\n" * 80)
+        (repo / "src" / "style.css").write_text("a {}\n" * 20)
+
+        settings = _make_settings(lang_scan_use_scc=False)
+        captured: list[dict] = []
+
+        def handler(request):
+            captured.append(json.loads(request.content))
+            return httpx.Response(200, json=_assistant_stop())
+
+        with respx.mock:
+            respx.post("https://openrouter.ai/api/v1/chat/completions").mock(side_effect=handler)
+            async with httpx.AsyncClient() as client:
+                result = await run_agent(
+                    repo_path=repo,
+                    repo_url="https://github.com/owner/repo",
+                    output_dir=out,
+                    settings=settings,
+                    client=client,
+                )
+
+        first_user = captured[0]["messages"][1]["content"]
+        assert "PRIMARY LANGUAGE: JavaScript" in first_user
+        assert "- JavaScript: 80.0%" in first_user
+        assert "- CSS: 20.0%" in first_user
+        assert "at least 20%" in first_user
+        # system prompt carries the static rules
+        assert "Language coverage — HARD REQUIREMENT" in captured[0]["messages"][0]["content"]
+        assert result.primary_language == "JavaScript"
+        assert result.lang_stats_source == "walk"
+        assert result.primary_forced is False
+        assert result.repo_lang_distribution == {"JavaScript": 0.8, "CSS": 0.2}
+
+
+@pytest.mark.asyncio
+async def test_saved_files_carry_language():
+    with tempfile.TemporaryDirectory() as tmp:
+        repo = Path(tmp) / "repo"
+        out = Path(tmp) / "out"
+        repo.mkdir()
+        (repo / "engine.py").write_text("x = 1\ny = 2\nz = 3\n")
+
+        settings = _make_settings(lang_scan_use_scc=False)
+        responses = iter([
+            _assistant_with_tools([_tool_call("c1", "save_sample", {"path": "engine.py", "layer": "business"})]),
+            _assistant_with_tools([_summary_call("c2")]),
+            _assistant_with_tools([_tool_call("c3", "finish", {"message": "done", "total_loc": 3, "file_count": 1})]),
+        ])
+
+        with respx.mock:
+            respx.post("https://openrouter.ai/api/v1/chat/completions").mock(
+                side_effect=lambda req: httpx.Response(200, json=next(responses))
+            )
+            async with httpx.AsyncClient() as client:
+                result = await run_agent(
+                    repo_path=repo,
+                    repo_url="https://github.com/owner/repo",
+                    output_dir=out,
+                    settings=settings,
+                    client=client,
+                )
+
+        assert result.files[0].language == "Python"
+        assert result.primary_language == "Python"
+        log = json.loads((out / result.folder_name / "agent_log.json").read_text())
+        assert log["stats"]["primary_language"] == "Python"
+        assert log["stats"]["sample_lang_distribution"] == {"Python": 3}
+        assert log["saved_files"][0]["language"] == "Python"
+
+
+@pytest.mark.asyncio
+async def test_primary_language_nudge_fires():
+    """Sample dominated by a non-primary language triggers the language nudge."""
+    with tempfile.TemporaryDirectory() as tmp:
+        repo = Path(tmp) / "repo"
+        out = Path(tmp) / "out"
+        repo.mkdir()
+        (repo / "main.py").write_text("x = 1\n" * 100)          # primary: Python
+        (repo / "notes.md").write_text("plain line\n" * 30)     # what the agent saves
+
+        settings = _make_settings(
+            lang_scan_use_scc=False, target_loc=40, loc_tolerance=5, max_total_loc=200,
+        )
+        responses = iter([
+            _assistant_with_tools([_tool_call("c1", "save_sample", {"path": "notes.md", "layer": "util"})]),
+            _assistant_with_tools([_summary_call("c2")]),
+            _assistant_with_tools([_tool_call("c3", "finish", {"message": "done", "total_loc": 30, "file_count": 1})]),
+        ])
+
+        with respx.mock:
+            respx.post("https://openrouter.ai/api/v1/chat/completions").mock(
+                side_effect=lambda req: httpx.Response(200, json=next(responses))
+            )
+            async with httpx.AsyncClient() as client:
+                result = await run_agent(
+                    repo_path=repo,
+                    repo_url="https://github.com/owner/repo",
+                    output_dir=out,
+                    settings=settings,
+                    client=client,
+                )
+
+        log = json.loads((out / result.folder_name / "agent_log.json").read_text())
+        nudges = [e["nudge"] for e in log["agent_log"] if "nudge" in e]
+        assert any("LANGUAGE REQUIREMENT FAILING" in n for n in nudges)
+        assert any("Python" in n for n in nudges)
+
+
+@pytest.mark.asyncio
+async def test_primary_language_override_wins():
+    with tempfile.TemporaryDirectory() as tmp:
+        repo = Path(tmp) / "repo"
+        out = Path(tmp) / "out"
+        repo.mkdir()
+        (repo / "main.py").write_text("x = 1\n" * 50)
+
+        settings = _make_settings(
+            lang_scan_use_scc=False, primary_language_override="SQL",
+        )
+        captured: list[dict] = []
+
+        def handler(request):
+            captured.append(json.loads(request.content))
+            return httpx.Response(200, json=_assistant_stop())
+
+        with respx.mock:
+            respx.post("https://openrouter.ai/api/v1/chat/completions").mock(side_effect=handler)
+            async with httpx.AsyncClient() as client:
+                result = await run_agent(
+                    repo_path=repo,
+                    repo_url="https://github.com/owner/repo",
+                    output_dir=out,
+                    settings=settings,
+                    client=client,
+                )
+
+        assert "PRIMARY LANGUAGE: SQL" in captured[0]["messages"][1]["content"]
+        assert result.primary_language == "SQL"
+        assert result.primary_forced is True

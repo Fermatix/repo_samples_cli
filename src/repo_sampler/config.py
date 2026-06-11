@@ -19,6 +19,20 @@ class Settings(BaseSettings):
     test_share_min: float = 0.1
     test_share_max: float = 0.2
 
+    # Language coverage: the sample must contain at least this share of LOC
+    # in the repo's primary language (the plurality language by code lines,
+    # scc-compatible naming). ~1000 LOC of a 5000-LOC sample — clearly "well
+    # represented", yet achievable even when the primary is markup/data or
+    # mostly generated.
+    primary_share_min: float = 0.20
+    # Force a specific primary language (scc name, e.g. "JavaScript"); set
+    # from the --primary-language CLI option. Empty = auto-detect.
+    primary_language_override: str = ""
+    # Prefer the scc binary for the repo language scan when installed
+    # (exact parity with the metadata pipeline); tests disable it.
+    lang_scan_use_scc: bool = True
+    lang_scan_timeout: int = 120       # seconds for the scc subprocess
+
     # Agent loop limits
     agent_max_iterations: int = 50
     agent_bash_timeout: int = 30       # seconds per bash call

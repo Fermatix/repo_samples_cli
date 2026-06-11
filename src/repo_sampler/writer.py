@@ -42,14 +42,25 @@ def append_jsonl_with_meta(
     test_loc = sum(f.loc_taken for f in result.files if f.layer == "test")
     test_share = test_loc / result.total_loc if result.total_loc else 0.0
 
+    sample_lang_distribution: dict[str, float] = {}
+    if result.total_loc:
+        by_lang: dict[str, int] = {}
+        for f in result.files:
+            key = f.language or "Unknown"
+            by_lang[key] = by_lang.get(key, 0) + f.loc_taken
+        sample_lang_distribution = {
+            k: round(v / result.total_loc, 4) for k, v in by_lang.items()
+        }
+
     record = {
         "repo_url": result.repo_url,
         "repo_name": result.repo_name,
         "folder_name": result.folder_name,
-        "language": "",
+        "language": result.primary_language,
         "total_loc": result.total_loc,
         "file_count": len(result.files),
         "test_share": round(test_share, 4),
+        "sample_lang_distribution": sample_lang_distribution,
         "files": [
             {
                 "path": f.path,
@@ -57,6 +68,7 @@ def append_jsonl_with_meta(
                 "rank": f.rank,
                 "loc_taken": f.loc_taken,
                 "is_partial": f.is_partial,
+                "language": f.language,
             }
             for f in result.files
         ],
@@ -67,6 +79,9 @@ def append_jsonl_with_meta(
             "bash_calls": result.bash_calls,
             "sampled_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
             "commit_sha": commit_sha,
+            "repo_lang_distribution": result.repo_lang_distribution,
+            "lang_stats_source": result.lang_stats_source,
+            "primary_forced": result.primary_forced,
         },
     }
 
@@ -118,6 +133,7 @@ def write_parquet(output_dir: Path) -> None:
             "repo_summary": r.get("repo_summary", ""),
             "files_json": json.dumps(r.get("files", [])),
             "meta_json": json.dumps(r.get("meta", {})),
+            "lang_distribution_json": json.dumps(r.get("sample_lang_distribution", {})),
         }
         for r in records
     ]
@@ -132,6 +148,7 @@ def write_parquet(output_dir: Path) -> None:
         "repo_summary": [r["repo_summary"] for r in flat_records],
         "files_json": [r["files_json"] for r in flat_records],
         "meta_json": [r["meta_json"] for r in flat_records],
+        "lang_distribution_json": [r["lang_distribution_json"] for r in flat_records],
     })
 
     pq.write_table(table, output_dir / "samples.parquet")
