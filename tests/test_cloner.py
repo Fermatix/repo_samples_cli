@@ -119,6 +119,20 @@ def test_rewrite_ssh_with_custom_port():
         "git@git.example.com:group/sub/repo.git"
 
 
+def test_clone_repo_timeout_is_configurable():
+    """Giant repos need more than the old hardcoded 120s; timeout is a param now."""
+    with tempfile.TemporaryDirectory() as tmp:
+        dest = Path(tmp) / "clones" / "dest"
+        with pytest.raises(CloneError, match="timeout after 1s"):
+            # ssh to a TEST-NET address hangs until our timeout fires
+            asyncio.run(clone_repo("git@192.0.2.1:owner/repo.git", dest, timeout=1))
+
+
+def test_clone_timeout_setting_default():
+    from repo_sampler.config import Settings
+    assert Settings(_env_file=None).clone_timeout == 900
+
+
 def test_clone_env_accepts_new_host_keys(monkeypatch):
     monkeypatch.delenv("GIT_SSH_COMMAND", raising=False)
     from repo_sampler.cloner import _clone_env

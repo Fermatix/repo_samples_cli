@@ -59,7 +59,7 @@ def _clone_env() -> dict:
     }
 
 
-async def clone_repo(url: str, dest: Path) -> Path:
+async def clone_repo(url: str, dest: Path, timeout: int = 900) -> Path:
     if dest.exists():
         logger.debug(f"Cache hit, skipping clone: {dest}")
         return dest
@@ -73,11 +73,11 @@ async def clone_repo(url: str, dest: Path) -> Path:
         env=_clone_env(),
     )
     try:
-        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=120)
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
     except asyncio.TimeoutError:
         proc.kill()
         await proc.communicate()
-        raise CloneError(url, "timeout after 120s")
+        raise CloneError(url, f"timeout after {timeout}s")
 
     if proc.returncode != 0:
         raise CloneError(url, stderr.decode(errors="replace"))

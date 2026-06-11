@@ -139,6 +139,7 @@ uv run repo-sampler anonymize ./output --force
 | `TARGET_LOC` | `5000` | Целевой объём сэмпла (строк кода) |
 | `MAX_TOTAL_LOC` | `6500` | Жёсткий потолок сэмпла — сохранения сверх него отклоняются |
 | `CLONE_WORKERS` | `10` | Параллельных клонирований |
+| `CLONE_TIMEOUT` | `900` | Таймаут одного `git clone`, сек (большим репозиториям может не хватать меньшего) |
 | `CLONE_DIR` | `/tmp/repo-sampler/clones` | Директория для клонов |
 | `OUTPUT_DIR` | `./output` | Директория вывода |
 | `ANONYMIZER_MODEL` | `claude-haiku-4-5` | Модель локального агента анонимизации |

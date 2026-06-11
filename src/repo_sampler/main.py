@@ -112,7 +112,11 @@ async def _process_repo(
         stage = "clone"
         try:
             logger.info(f"[{repo_name}] cloning...")
-            await clone_repo(rewrite_url(url, url_scheme, ssh_port), clone_dest)
+            await clone_repo(
+                rewrite_url(url, url_scheme, ssh_port),
+                clone_dest,
+                timeout=settings.clone_timeout,
+            )
 
             if dry_run:
                 proc = await asyncio.create_subprocess_exec(
@@ -336,7 +340,11 @@ def show_sample(
     async def _run():
         async with httpx.AsyncClient() as client:
             try:
-                await clone_repo(rewrite_url(repo_url, url_scheme, ssh_port), clone_dest)
+                await clone_repo(
+                    rewrite_url(repo_url, url_scheme, ssh_port),
+                    clone_dest,
+                    timeout=settings.clone_timeout,
+                )
                 result = await run_agent(
                     repo_path=clone_dest,
                     repo_url=repo_url,

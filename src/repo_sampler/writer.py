@@ -85,7 +85,15 @@ def append_jsonl_with_meta(
     }
 
     path.parent.mkdir(parents=True, exist_ok=True)
-    with jsonlines.open(path, mode="a") as writer:
+    # Re-runs (--force, zero-LOC retries) must replace the repo's earlier
+    # record, not append a duplicate line.
+    existing = []
+    if path.exists():
+        with jsonlines.open(path) as reader:
+            existing = [r for r in reader if r.get("repo_url") != result.repo_url]
+    with jsonlines.open(path, mode="w") as writer:
+        for r in existing:
+            writer.write(r)
         writer.write(record)
 
 
