@@ -248,3 +248,10 @@ def test_logicless_templates_are_not_code():
     assert is_code_language("Twig Template")
     assert is_code_language("Blade template")
     assert is_code_language("SQL")
+
+
+def test_xaml_is_markup_not_focus():
+    from repo_sampler.languages import pick_code_primary
+    stats = LanguageStats(counts={"XAML": 600, "C#": 400},
+                          total=1000, primary="XAML", source="walk")
+    assert pick_code_primary(stats) == "C#"

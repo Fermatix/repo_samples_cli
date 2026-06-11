@@ -448,6 +448,31 @@ def show_sample(
                     client=client,
                 )
 
+                # Same validation as the batch `run` path: zero-LOC and (in
+                # hard mode) primary-share failures retry once, then reject
+                # and delete the deliverable.
+                failure = _result_failure(result, settings)
+                if failure:
+                    logger.warning(f"[{repo_name}] {failure[1]}, retrying once...")
+                    result = await run_agent(
+                        repo_path=clone_dest,
+                        repo_url=repo_url,
+                        output_dir=output,
+                        settings=settings,
+                        client=client,
+                    )
+                    failure = _result_failure(result, settings)
+                if failure:
+                    rejected_dir = output / result.folder_name
+                    if rejected_dir.exists():
+                        import shutil
+                        shutil.rmtree(rejected_dir, ignore_errors=True)
+                    console.print(
+                        f"[red]REJECTED after retry: {failure[1]} "
+                        f"(stage {failure[0]}); deliverable removed.[/red]"
+                    )
+                    raise typer.Exit(1)
+
                 table = Table(title=f"Sample: {repo_name}")
                 table.add_column("Rank", justify="right")
                 table.add_column("Path", style="cyan")

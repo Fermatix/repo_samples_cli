@@ -645,15 +645,23 @@ async def run_agent(
         exts = ", ".join(extensions_for(primary)) or "n/a"
         if not primary_forced and stats.primary and stats.primary != primary:
             from .languages import NON_CODE_LANGS
-            kind = (
-                "markup/style/data" if stats.primary in NON_CODE_LANGS
-                else "not trackable for sampling"
-            )
-            plurality_note = (
-                f"(The repo's plurality language {stats.primary} is {kind} — focus "
-                f"the code sampling on {primary} instead, but still include 1-2 "
-                f"representative {stats.primary} files so that language is present.)\n"
-            )
+            if stats.primary in NON_CODE_LANGS:
+                # Trackable markup plurality: keep a token presence so the
+                # client-side "sample contains primary_language lines" check
+                # stays satisfiable.
+                plurality_note = (
+                    f"(The repo's plurality language {stats.primary} is "
+                    f"markup/style/data — focus the code sampling on {primary} "
+                    f"instead, but still include 1-2 representative "
+                    f"{stats.primary} files so that language is present.)\n"
+                )
+            else:
+                # Untrackable language: we cannot tag its files, so do not
+                # promise presence — just redirect the focus.
+                plurality_note = (
+                    f"(The repo's plurality language {stats.primary} cannot be "
+                    f"tracked here — focus the code sampling on {primary}.)\n"
+                )
         else:
             plurality_note = ""
         if primary_forced:

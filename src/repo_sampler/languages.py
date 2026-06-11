@@ -197,7 +197,7 @@ TRACKABLE_LANGS = frozenset(_CANONICAL.values())
 # JSON, not the code inside.
 NON_CODE_LANGS = frozenset({
     "SVG", "CSS", "Sass", "LESS", "Stylus", "HTML", "JSON", "Markdown", "MDX",
-    "Plain Text", "CSV", "YAML", "TOML", "INI", "XML", "XML Schema",
+    "Plain Text", "CSV", "YAML", "TOML", "INI", "XML", "XML Schema", "XAML",
     "License", "Properties File", "Docker ignore",
     "Mustache", "Handlebars", "Jade", "HAML", "Jupyter",
 })
