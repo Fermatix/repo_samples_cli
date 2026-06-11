@@ -12,7 +12,8 @@ build/
 .metals
 .claude
 .DS_Store
-.csv
+*.csv
 
 output/
 /tmp/repo-sampler/
+samples/
