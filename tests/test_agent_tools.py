@@ -306,3 +306,29 @@ def test_save_sample_oversized_single_file_suggests_partial():
         ok = _exec_save_sample(ctx, "huge.py", "business", start_line=1, end_line=30)
         assert ok["saved"] is True
         assert ctx.saved_files[0].loc_taken == 30
+
+
+def test_save_sample_rejects_duplicate_path():
+    """Re-saving an already-saved file is rejected: no double-count, no overwrite."""
+    with tempfile.TemporaryDirectory() as tmp:
+        repo = Path(tmp) / "repo"
+        out = Path(tmp) / "out"
+        repo.mkdir()
+        (repo / "app.py").write_text("".join(f"x{i} = {i}\n" for i in range(20)))
+
+        ctx = _make_ctx(repo, out)
+        ok = _exec_save_sample(ctx, "app.py", "business")
+        assert ok["saved"] is True
+
+        # same path, full file
+        dup = _exec_save_sample(ctx, "app.py", "business")
+        assert dup["saved"] is False
+        assert "DIFFERENT file" in dup["error"]
+
+        # same path via ./ prefix and partial range — still rejected
+        dup2 = _exec_save_sample(ctx, "./app.py", "business", start_line=1, end_line=5)
+        assert dup2["saved"] is False
+
+        assert len(ctx.saved_files) == 1
+        # disk still holds the original full file, not a 5-line overwrite
+        assert (out / "samples" / "app.py").read_text().count("\n") == 20

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -275,6 +276,19 @@ def _exec_save_sample(
     src = ctx.repo_path / path
     if not src.exists():
         return {"saved": False, "error": f"File not found: {path}"}
+
+    norm = os.path.normpath(path)
+    already = next((f for f in ctx.saved_files if os.path.normpath(f.path) == norm), None)
+    if already:
+        # Re-saving inflates the LOC counter without adding content (and a
+        # different line range would overwrite the earlier chunk on disk).
+        return {
+            "saved": False,
+            "error": (
+                f"Already saved {path} ({already.loc_taken} LOC, rank {already.rank}). "
+                f"Re-saving adds nothing — pick a DIFFERENT file."
+            ),
+        }
 
     try:
         content = src.read_text(errors="ignore")
@@ -590,7 +604,8 @@ async def run_agent(
             nudge = (
                 f"⚠️ You have saved {saves_so_far} files ({saved_loc} LOC) but haven't saved "
                 f"anything in {turns_since_save} turns. You still need ~{remaining} more LOC. "
-                f"Save more files now."
+                f"Save more files now. If the repo has no substantive files left, do NOT "
+                f"repeat already-saved files — call write_summary and finish instead."
             )
             messages.append({"role": "user", "content": nudge})
             agent_log.append({"turn": iteration + 1, "nudge": nudge})
