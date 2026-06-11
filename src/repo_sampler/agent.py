@@ -315,6 +315,14 @@ def _exec_save_sample(
 
     language = lang_from_path(path)
     loc = count_code_lines(chunk, language)
+    if loc == 0:
+        return {
+            "saved": False,
+            "error": (
+                f"File {path} has 0 substantive LOC (empty, binary, or only blanks/comments). "
+                f"Pick a different file with actual code."
+            ),
+        }
     current_total = sum(f.loc_taken for f in ctx.saved_files)
     cap = ctx.settings.max_total_loc
     if current_total + loc > cap:

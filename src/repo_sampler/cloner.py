@@ -80,7 +80,7 @@ async def clone_repo(url: str, dest: Path, timeout: int = 900) -> Path:
     dest.parent.mkdir(parents=True, exist_ok=True)
 
     proc = await asyncio.create_subprocess_exec(
-        "git", "clone", "--depth=1", "--quiet", "--filter=blob:none", url, str(dest),
+        "git", "clone", "--depth=1", "--quiet", url, str(dest),
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
         env=_clone_env(),

@@ -12,10 +12,11 @@ build/
 .metals
 .claude
 .DS_Store
-.csv
+*.csv
 
 output/
 /tmp/repo-sampler/
+samples/
 
 # local sampler test runs (test4, test10, ...)
 /test[0-9]*/
