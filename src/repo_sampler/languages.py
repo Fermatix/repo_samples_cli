@@ -184,10 +184,19 @@ _CANONICAL = {name.lower(): name for name in EXT_TO_LANG.values()}
 _CANONICAL.update({lang.lower(): lang for _, lang in _NAME_ENDSWITH_TO_LANG})
 _CANONICAL.update({lang.lower(): lang for lang in _FILENAME_TO_LANG.values()})
 
+# Every name lang_from_path() can produce — only these can be tracked per-save
+# and therefore enforced as a primary language.
+TRACKABLE_LANGS = frozenset(_CANONICAL.values())
+
 
 def canonicalize(name: str) -> str | None:
     """Map a case-insensitive language name to its scc spelling, or None."""
     return _CANONICAL.get(name.strip().lower())
+
+
+def is_trackable(name: str) -> bool:
+    """True when saved files of this language can be recognized by path."""
+    return name in TRACKABLE_LANGS
 
 
 def extensions_for(language: str) -> list[str]:
@@ -221,10 +230,12 @@ def _scc_language_counts(
     if not shutil.which("scc"):
         return None
     try:
+        # --exclude-dir REPLACES scc's default [.git,.hg,.svn] — keep them so
+        # the scc path and the walk fallback see the same tree.
         proc = subprocess.run(
             [
                 "scc", "--format", "json", "--no-complexity",
-                "--exclude-dir", ",".join(sorted(exclude_dirs - {".git"})),
+                "--exclude-dir", ",".join(sorted(exclude_dirs | {".hg", ".svn"})),
                 str(repo_path),
             ],
             capture_output=True,
@@ -265,13 +276,18 @@ def _walk_language_counts(
                 if size == 0 or size > _MAX_FILE_BYTES:
                     continue
                 lines = 0
+                last = b""
                 with open(fpath, "rb") as fh:
                     head = fh.read(_SNIFF_BYTES)
                     if b"\0" in head:
                         continue
                     lines += head.count(b"\n")
+                    last = head[-1:]
                     while chunk := fh.read(1 << 20):
                         lines += chunk.count(b"\n")
+                        last = chunk[-1:]
+                if last and last != b"\n":
+                    lines += 1  # final line without trailing newline
             except OSError:
                 continue
             if lines:

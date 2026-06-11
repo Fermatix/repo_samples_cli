@@ -183,3 +183,20 @@ def test_format_distribution():
     assert text.splitlines()[0] == "- JavaScript: 60.0%"
     assert "- PHP: 35.0%" in text
     assert format_distribution(LanguageStats()) == "(language distribution unavailable)"
+
+
+def test_walk_counts_final_line_without_trailing_newline(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "one.py").write_text("x = 1")            # 1 line, no trailing \n
+    (repo / "two.py").write_text("a\nb")             # 2 lines, no trailing \n
+    stats = compute_language_stats(repo, use_scc=False)
+    assert stats.counts == {"Python": 3}
+
+
+def test_is_trackable():
+    from repo_sampler.languages import is_trackable
+    assert is_trackable("JavaScript")
+    assert is_trackable("Blade template")
+    assert not is_trackable("Solidity")
+    assert not is_trackable("")

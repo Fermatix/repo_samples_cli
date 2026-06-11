@@ -101,3 +101,52 @@ def test_result_failure_no_primary_language_known():
     settings = Settings(openrouter_api_key="k")
     result = _result_with([("a.weird", 100, "")], primary="")
     assert _result_failure(result, settings) is None
+
+
+def test_rejected_deliverable_dir_is_deleted(tmp_path, monkeypatch):
+    """A sample that fails primary-language validation must not leave a
+    populated deliverable folder behind — the anonymize step would ship it."""
+    import asyncio
+
+    import httpx
+
+    from repo_sampler import main as main_mod
+
+    url = "https://h.com/o/r"
+    folder = "h.com__o__r"
+    output = tmp_path / "out"
+    output.mkdir()
+
+    async def fake_clone(u, dest, timeout=0):
+        dest.mkdir(parents=True, exist_ok=True)
+
+    failing = _result_with([("a.php", 5000, "PHP")], primary="JavaScript")
+    failing.folder_name = folder
+
+    async def fake_run_agent(repo_path, repo_url, output_dir, settings, client):
+        d = output_dir / folder
+        (d / "samples").mkdir(parents=True, exist_ok=True)
+        (d / "samples" / "a.php").write_text("<?php\n")
+        (d / "repo_summary.md").write_text("summary")
+        return failing
+
+    monkeypatch.setattr(main_mod, "clone_repo", fake_clone)
+    monkeypatch.setattr(main_mod, "run_agent", fake_run_agent)
+    monkeypatch.setattr(main_mod, "cleanup_repo", lambda p: None)
+
+    settings = Settings(openrouter_api_key="k", clone_dir=str(tmp_path / "clones"))
+
+    async def go():
+        async with httpx.AsyncClient() as client:
+            return await main_mod._process_repo(
+                url, output, settings, client,
+                keep_clones=True, dry_run=False,
+                clone_sem=asyncio.Semaphore(1),
+                errors_path=output / "errors.jsonl",
+            )
+
+    result = asyncio.run(go())
+    assert "error" in result
+    assert not (output / folder).exists()          # rejected deliverable removed
+    assert (output / "errors.jsonl").exists()
+    assert "agent_no_primary_lang" in (output / "errors.jsonl").read_text()

@@ -93,10 +93,11 @@ def _result_failure(result: AgentResult, settings: Settings) -> tuple[str, str] 
         share = _primary_share(result)
         if share < settings.primary_share_min:
             ploc = round(share * result.total_loc)
+            # floor the displayed % so 19.6% never reads as "20% below 20%"
             return (
                 "agent_no_primary_lang",
                 f"primary language '{result.primary_language}': {ploc} LOC "
-                f"({share:.0%}) below the {settings.primary_share_min:.0%} minimum",
+                f"({int(share * 100)}%) below the {settings.primary_share_min:.0%} minimum",
             )
     return None
 
@@ -200,6 +201,14 @@ async def _process_repo(
                 # manifest record would now point at an empty folder.
                 if remove_record(output_dir / "samples.jsonl", url):
                     logger.warning(f"[{repo_name}] removed stale samples.jsonl record")
+                # Delete the rejected deliverable: a populated folder with a
+                # repo_summary.md would be picked up by the anonymize step and
+                # shipped despite failing validation.
+                rejected_dir = output_dir / folder_name
+                if rejected_dir.exists():
+                    import shutil
+                    shutil.rmtree(rejected_dir, ignore_errors=True)
+                    logger.warning(f"[{repo_name}] removed rejected deliverable dir")
                 return {"repo_url": url, "repo_name": repo_name, "folder_name": folder_name,
                         "error": f"{fail_msg} after retry"}
 

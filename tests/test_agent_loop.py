@@ -410,3 +410,116 @@ async def test_primary_language_override_wins():
         assert "PRIMARY LANGUAGE: SQL" in captured[0]["messages"][1]["content"]
         assert result.primary_language == "SQL"
         assert result.primary_forced is True
+
+
+@pytest.mark.asyncio
+async def test_untrackable_scc_primary_falls_back_to_trackable(monkeypatch):
+    """An scc-detected primary our path-tagging can't recognize must not be
+    enforced (it would count 0 LOC forever) — fall back to the best trackable."""
+    from repo_sampler import agent as agent_mod
+    from repo_sampler.languages import LanguageStats
+
+    with tempfile.TemporaryDirectory() as tmp:
+        repo = Path(tmp) / "repo"
+        out = Path(tmp) / "out"
+        repo.mkdir()
+        (repo / "a.js").write_text("var x;\n")
+
+        monkeypatch.setattr(
+            agent_mod, "compute_language_stats",
+            lambda *a, **k: LanguageStats(
+                counts={"Solidity": 900, "JavaScript": 100},
+                total=1000, primary="Solidity", source="scc",
+            ),
+        )
+        settings = _make_settings()
+        captured: list[dict] = []
+
+        def handler(request):
+            captured.append(json.loads(request.content))
+            return httpx.Response(200, json=_assistant_stop())
+
+        with respx.mock:
+            respx.post("https://openrouter.ai/api/v1/chat/completions").mock(side_effect=handler)
+            async with httpx.AsyncClient() as client:
+                result = await run_agent(
+                    repo_path=repo,
+                    repo_url="https://github.com/owner/repo",
+                    output_dir=out,
+                    settings=settings,
+                    client=client,
+                )
+
+        assert result.primary_language == "JavaScript"
+        assert "PRIMARY LANGUAGE: JavaScript" in captured[0]["messages"][1]["content"]
+
+
+@pytest.mark.asyncio
+async def test_no_primary_drops_language_section_from_system_prompt():
+    with tempfile.TemporaryDirectory() as tmp:
+        repo = Path(tmp) / "repo"
+        out = Path(tmp) / "out"
+        repo.mkdir()  # empty repo -> no distribution
+
+        settings = _make_settings(lang_scan_use_scc=False)
+        captured: list[dict] = []
+
+        def handler(request):
+            captured.append(json.loads(request.content))
+            return httpx.Response(200, json=_assistant_stop())
+
+        with respx.mock:
+            respx.post("https://openrouter.ai/api/v1/chat/completions").mock(side_effect=handler)
+            async with httpx.AsyncClient() as client:
+                await run_agent(
+                    repo_path=repo,
+                    repo_url="https://github.com/owner/repo",
+                    output_dir=out,
+                    settings=settings,
+                    client=client,
+                )
+
+        assert "Language coverage" not in captured[0]["messages"][0]["content"]
+        assert "could not be determined" in captured[0]["messages"][1]["content"]
+
+
+@pytest.mark.asyncio
+async def test_unrecoverable_language_state_ends_run_early():
+    """When the cap headroom can no longer fix the primary share, the loop
+    aborts instead of thrashing through contradictory nudges."""
+    with tempfile.TemporaryDirectory() as tmp:
+        repo = Path(tmp) / "repo"
+        out = Path(tmp) / "out"
+        repo.mkdir()
+        (repo / "main.py").write_text("x = 1\n" * 100)       # primary: Python
+        (repo / "notes.md").write_text("plain line\n" * 40)  # non-primary filler
+
+        settings = _make_settings(
+            lang_scan_use_scc=False, target_loc=40, loc_tolerance=5, max_total_loc=45,
+        )
+        calls = 0
+
+        def handler(request):
+            nonlocal calls
+            calls += 1
+            return httpx.Response(200, json=_assistant_with_tools(
+                [_tool_call(f"c{calls}", "save_sample", {"path": "notes.md", "layer": "util"})]
+            ))
+
+        with respx.mock:
+            respx.post("https://openrouter.ai/api/v1/chat/completions").mock(side_effect=handler)
+            async with httpx.AsyncClient() as client:
+                result = await run_agent(
+                    repo_path=repo,
+                    repo_url="https://github.com/owner/repo",
+                    output_dir=out,
+                    settings=settings,
+                    client=client,
+                )
+
+        # one save (40 LOC of md), then the loop detects unrecoverability:
+        # need = ceil((0.2*40 - 0)/0.8) = 10 > headroom 5 -> abort
+        assert calls == 1
+        log = json.loads((out / result.folder_name / "agent_log.json").read_text())
+        aborted = [e for e in log["agent_log"] if "aborted" in e]
+        assert aborted and "unrecoverable" in aborted[0]["aborted"]
