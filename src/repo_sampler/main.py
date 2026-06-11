@@ -389,9 +389,17 @@ def anonymize(
     model: Optional[str] = typer.Option(None, help="Override anonymizer model"),
     effort: Optional[str] = typer.Option(None, help="Thinking effort: low|medium|high|max"),
     force: bool = typer.Option(False, help="Re-anonymize dirs already marked done"),
+    meta_dir: Optional[Path] = typer.Option(
+        None,
+        "--meta-dir",
+        help="Keep deliverables client-ready: write anonymization artifacts to "
+        "META_DIR/<folder>/ and move everything except samples/ and "
+        "repo_summary.md (agent_log.json, run.log, ...) there too",
+    ),
 ) -> None:
     """Anonymize all sample deliverables in OUTPUT using a local Claude agent per directory."""
-    _setup_logging(output)
+    # With --meta-dir the deliverable tree must stay clean — log there instead.
+    _setup_logging(meta_dir if meta_dir else output)
     settings = Settings()
     if workers:
         settings.anonymizer_workers = workers
@@ -400,7 +408,7 @@ def anonymize(
     if effort:
         settings.anonymizer_effort = effort
 
-    results = asyncio.run(run_anonymizer(output, settings, force))
+    results = asyncio.run(run_anonymizer(output, settings, force, meta_dir))
     _print_anonymize_table(results)
 
 

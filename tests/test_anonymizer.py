@@ -1,3 +1,4 @@
+import asyncio
 import tempfile
 from pathlib import Path
 
@@ -7,6 +8,7 @@ from repo_sampler.anonymizer import (
     _build_claude_argv,
     _extract_cost,
     _parse_unified_diff,
+    anonymize_dir,
     compute_diff,
     discover_sample_dirs,
     is_anonymized,
@@ -65,6 +67,63 @@ def test_is_anonymized_marker():
         assert is_anonymized(d) is False
         (d / "anonymization_report.json").write_text("{}")
         assert is_anonymized(d) is True
+
+
+def test_is_anonymized_with_meta_dir():
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        d = _make_sample_dir(root, "repo")
+        meta = root / "meta"
+        assert is_anonymized(d, meta) is False
+        # marker in the sample dir itself must not count in meta mode
+        (d / "anonymization_report.json").write_text("{}")
+        assert is_anonymized(d, meta) is False
+        (meta / "repo").mkdir(parents=True)
+        (meta / "repo" / "anonymization_report.json").write_text("{}")
+        assert is_anonymized(d, meta) is True
+
+
+# ---------------------------------------------------------------------------
+# anonymize_dir (claude stubbed out)
+# ---------------------------------------------------------------------------
+
+def _stub_claude(monkeypatch):
+    monkeypatch.setattr(
+        "repo_sampler.anonymizer._build_claude_argv",
+        lambda settings: ["echo", '{"total_cost_usd": 0.01}'],
+    )
+
+
+def test_anonymize_dir_default_keeps_artifacts_in_place(monkeypatch):
+    _stub_claude(monkeypatch)
+    with tempfile.TemporaryDirectory() as tmp:
+        d = _make_sample_dir(Path(tmp), "repo")
+        result = asyncio.run(anonymize_dir(d, Settings(), asyncio.Semaphore(1)))
+
+        assert result["status"] == "ok"
+        assert result["cost"] == 0.01
+        assert (d / "anonymization_report.json").exists()
+        assert (d / "anonymization.diff").exists()
+
+
+def test_anonymize_dir_meta_mode_keeps_deliverable_clean(monkeypatch):
+    """--meta-dir: artifacts land in meta/<folder>/, everything except
+    samples/ + repo_summary.md is swept out of the deliverable."""
+    _stub_claude(monkeypatch)
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        d = _make_sample_dir(root, "repo")
+        (d / "agent_log.json").write_text('{"raw": "not anonymized"}')
+        meta = root / "meta"
+
+        result = asyncio.run(anonymize_dir(d, Settings(), asyncio.Semaphore(1), meta))
+
+        assert result["status"] == "ok"
+        assert sorted(p.name for p in d.iterdir()) == ["repo_summary.md", "samples"]
+        assert (meta / "repo" / "anonymization_report.json").exists()
+        assert (meta / "repo" / "anonymization.diff").exists()
+        assert (meta / "repo" / "agent_log.json").exists()
+        assert is_anonymized(d, meta) is True
 
 
 # ---------------------------------------------------------------------------

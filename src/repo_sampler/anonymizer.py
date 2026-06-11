@@ -17,6 +17,11 @@ SKIP_DIRS = {"archive"}
 # Files inside a sample dir that must not be touched / not counted in the diff.
 _DIFF_EXCLUDES = ["agent_log.json", "anonymization.*", ".*"]
 
+# What a client-facing deliverable may contain. With --meta-dir, everything
+# else (agent_log.json with raw un-anonymized previews, stray files) is moved
+# out so it cannot be sent to the client by accident.
+_DELIVERABLE_KEEP = {"samples", "repo_summary.md"}
+
 
 ANONYMIZE_PROMPT = """\
 You are anonymizing a code sample deliverable in the current directory. Process EVERY file under \
@@ -71,8 +76,9 @@ def discover_sample_dirs(output_dir: Path, skip: set[str] | None = None) -> list
     return dirs
 
 
-def is_anonymized(sample_dir: Path) -> bool:
-    return (sample_dir / "anonymization_report.json").exists()
+def is_anonymized(sample_dir: Path, meta_dir: Path | None = None) -> bool:
+    base = meta_dir / sample_dir.name if meta_dir else sample_dir
+    return (base / "anonymization_report.json").exists()
 
 
 # ---------------------------------------------------------------------------
@@ -177,10 +183,25 @@ def _extract_cost(stdout: str) -> float | None:
     return None
 
 
+def _sweep_non_deliverables(sample_dir: Path, meta_repo_dir: Path) -> None:
+    """Move everything except samples/ + repo_summary.md into the meta dir."""
+    for item in sorted(sample_dir.iterdir()):
+        if item.name in _DELIVERABLE_KEEP:
+            continue
+        target = meta_repo_dir / item.name
+        if target.is_dir():
+            shutil.rmtree(target)
+        elif target.exists():
+            target.unlink()
+        shutil.move(str(item), str(target))
+        logger.info(f"[{sample_dir.name}] moved {item.name} to meta dir")
+
+
 async def anonymize_dir(
     sample_dir: Path,
     settings: Settings,
     sem: asyncio.Semaphore,
+    meta_dir: Path | None = None,
 ) -> dict:
     folder = sample_dir.name
     async with sem:
@@ -216,7 +237,11 @@ async def anonymize_dir(
             cost = _extract_cost(stdout)
 
             diff_text, stats = await compute_diff(snap, sample_dir)
-            _write_artifacts(sample_dir, diff_text, stats, settings.anonymizer_model, cost)
+            artifacts_dir = meta_dir / folder if meta_dir else sample_dir
+            artifacts_dir.mkdir(parents=True, exist_ok=True)
+            _write_artifacts(artifacts_dir, diff_text, stats, settings.anonymizer_model, cost)
+            if meta_dir:
+                _sweep_non_deliverables(sample_dir, artifacts_dir)
 
             files_changed = len(stats)
             logger.info(
@@ -268,12 +293,13 @@ async def run_anonymizer(
     output_dir: Path,
     settings: Settings,
     force: bool = False,
+    meta_dir: Path | None = None,
 ) -> list[dict]:
     dirs = discover_sample_dirs(output_dir)
 
     if not force:
         original = len(dirs)
-        dirs = [d for d in dirs if not is_anonymized(d)]
+        dirs = [d for d in dirs if not is_anonymized(d, meta_dir)]
         skipped = original - len(dirs)
         if skipped:
             logger.info(f"Skipping {skipped} already anonymized dirs (use --force to redo)")
@@ -284,6 +310,6 @@ async def run_anonymizer(
     )
 
     sem = asyncio.Semaphore(settings.anonymizer_workers)
-    tasks = [anonymize_dir(d, settings, sem) for d in dirs]
+    tasks = [anonymize_dir(d, settings, sem, meta_dir) for d in dirs]
     results = await asyncio.gather(*tasks, return_exceptions=False)
     return list(results)
