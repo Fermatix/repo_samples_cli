@@ -109,3 +109,19 @@ def test_same_leaf_name_distinct_clone_dests():
     a = url_to_folder_name("https://h.com/team-a/android")
     b = url_to_folder_name("https://h.com/team-b/android")
     assert a != b
+
+
+def test_rewrite_ssh_with_custom_port():
+    assert rewrite_url("https://git.example.com/group/sub/repo.git", "ssh", ssh_port=10022) == \
+        "ssh://git@git.example.com:10022/group/sub/repo.git"
+    # no port -> scp form
+    assert rewrite_url("https://git.example.com/group/sub/repo.git", "ssh") == \
+        "git@git.example.com:group/sub/repo.git"
+
+
+def test_clone_env_accepts_new_host_keys(monkeypatch):
+    monkeypatch.delenv("GIT_SSH_COMMAND", raising=False)
+    from repo_sampler.cloner import _clone_env
+    cmd = _clone_env()["GIT_SSH_COMMAND"]
+    assert "BatchMode=yes" in cmd
+    assert "StrictHostKeyChecking=accept-new" in cmd

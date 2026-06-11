@@ -43,7 +43,21 @@ https://gitlab.com/org/group/repo2
   uv run repo-sampler run repos.txt --url-scheme ssh
   ```
 
+  Если у вашего GitLab SSH работает на нестандартном порту, добавьте `--ssh-port`:
+
+  ```bash
+  uv run repo-sampler run repos.txt --url-scheme ssh --ssh-port 10022
+  ```
+
+  Ключ с парольной фразой должен быть загружен в `ssh-agent` (`ssh-add`) — утилита не может спросить пароль интерактивно.
+
 - **HTTPS:** авторизуйтесь в терминале через `gh auth login` (GitHub) или `glab auth login --hostname <ваш-gitlab>` (GitLab) — git подхватит сохранённые креды.
+
+Проверить доступ перед запуском можно одной командой (должна отработать без вопросов):
+
+```bash
+git ls-remote git@<ваш-git-сервер>:<группа>/<репозиторий>.git
+```
 
 ### 5. Запуск сбора
 
