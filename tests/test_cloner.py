@@ -109,3 +109,48 @@ def test_same_leaf_name_distinct_clone_dests():
     a = url_to_folder_name("https://h.com/team-a/android")
     b = url_to_folder_name("https://h.com/team-b/android")
     assert a != b
+
+
+def test_rewrite_ssh_with_custom_port():
+    assert rewrite_url("https://git.example.com/group/sub/repo.git", "ssh", ssh_port=10022) == \
+        "ssh://git@git.example.com:10022/group/sub/repo.git"
+    # no port -> scp form
+    assert rewrite_url("https://git.example.com/group/sub/repo.git", "ssh") == \
+        "git@git.example.com:group/sub/repo.git"
+
+
+def test_clone_repo_timeout_is_configurable(monkeypatch, tmp_path):
+    """Giant repos need more than the old hardcoded 120s; timeout is a param now."""
+    class FakeProc:
+        pid = -1  # getpgid(-1) fails -> falls back to kill()
+
+        def __init__(self):
+            self._killed = asyncio.Event()
+
+        async def communicate(self):
+            await self._killed.wait()  # hangs until killed
+            return b"", b""
+
+        def kill(self):
+            self._killed.set()
+
+    async def fake_exec(*args, **kwargs):
+        return FakeProc()
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+    with pytest.raises(CloneError, match="timeout after 1s"):
+        asyncio.run(clone_repo("git@h.com:o/r.git", tmp_path / "clones" / "d", timeout=1))
+
+
+def test_clone_timeout_setting_default(monkeypatch):
+    monkeypatch.delenv("CLONE_TIMEOUT", raising=False)
+    from repo_sampler.config import Settings
+    assert Settings(_env_file=None).clone_timeout == 900
+
+
+def test_clone_env_accepts_new_host_keys(monkeypatch):
+    monkeypatch.delenv("GIT_SSH_COMMAND", raising=False)
+    from repo_sampler.cloner import _clone_env
+    cmd = _clone_env()["GIT_SSH_COMMAND"]
+    assert "BatchMode=yes" in cmd
+    assert "StrictHostKeyChecking=accept-new" in cmd

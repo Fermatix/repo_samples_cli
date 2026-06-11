@@ -16,7 +16,7 @@ from .agent import AgentResult, AuthError, run_agent, url_to_folder_name
 from .anonymizer import run_anonymizer
 from .cloner import CloneError, cleanup_repo, clone_repo, rewrite_url
 from .config import Settings
-from .writer import append_jsonl_with_meta, write_parquet
+from .writer import append_jsonl_with_meta, remove_record, write_parquet
 
 app = typer.Typer(help="CLI tool for extracting representative code samples from git repositories.")
 console = Console()
@@ -98,6 +98,7 @@ async def _process_repo(
     clone_sem: asyncio.Semaphore,
     errors_path: Path,
     url_scheme: str = "as-is",
+    ssh_port: int | None = None,
 ) -> dict | None:
     repo_name = url.rstrip("/").split("/")[-1]
     # Naming always derives from the original URL so output folders stay
@@ -111,7 +112,11 @@ async def _process_repo(
         stage = "clone"
         try:
             logger.info(f"[{repo_name}] cloning...")
-            await clone_repo(rewrite_url(url, url_scheme), clone_dest)
+            await clone_repo(
+                rewrite_url(url, url_scheme, ssh_port),
+                clone_dest,
+                timeout=settings.clone_timeout,
+            )
 
             if dry_run:
                 proc = await asyncio.create_subprocess_exec(
@@ -150,6 +155,10 @@ async def _process_repo(
                 # would mark the repo as processed and skip it on every re-run.
                 logger.error(f"[{repo_name}] agent saved 0 LOC after retry, not recording")
                 _write_error(errors_path, url, "agent_empty", "agent saved 0 LOC after retry")
+                # A --force re-run cleared the old deliverable folder; its old
+                # manifest record would now point at an empty folder.
+                if remove_record(output_dir / "samples.jsonl", url):
+                    logger.warning(f"[{repo_name}] removed stale samples.jsonl record")
                 return {"repo_url": url, "repo_name": repo_name, "folder_name": folder_name,
                         "error": "agent saved 0 LOC after retry"}
 
@@ -208,6 +217,9 @@ def run(
     url_scheme: str = typer.Option(
         "as-is", help="Rewrite repo URLs for cloning: ssh|https|as-is (use ssh to clone with SSH keys)"
     ),
+    ssh_port: Optional[int] = typer.Option(
+        None, help="Non-standard SSH port of your git server (used with --url-scheme ssh)"
+    ),
 ) -> None:
     """Process repos from file. Already completed repos are skipped automatically (use --force to override)."""
     output.mkdir(parents=True, exist_ok=True)
@@ -235,7 +247,7 @@ def run(
     )
 
     results = asyncio.run(
-        _run_all(repos, output, settings, keep_clones, dry_run, errors_path, url_scheme)
+        _run_all(repos, output, settings, keep_clones, dry_run, errors_path, url_scheme, ssh_port)
     )
 
     if format == "parquet":
@@ -252,6 +264,7 @@ async def _run_all(
     dry_run: bool,
     errors_path: Path,
     url_scheme: str = "as-is",
+    ssh_port: int | None = None,
 ) -> list[dict]:
     clone_sem = asyncio.Semaphore(settings.clone_workers)
     async with httpx.AsyncClient() as client:
@@ -260,6 +273,7 @@ async def _run_all(
                 url, output_dir, settings, client,
                 keep_clones, dry_run, clone_sem, errors_path,
                 url_scheme=url_scheme,
+                ssh_port=ssh_port,
             )
             for url in repos
         ]
@@ -299,6 +313,12 @@ def _print_summary_table(results: list[dict]) -> None:
         f"Errors: {errors}  |  "
         f"Total LOC: {total_loc:,}"
     )
+    error_results = [r for r in results if "error" in r]
+    if error_results:
+        console.print("\n[red]First errors (full list in errors.jsonl):[/red]")
+        for r in error_results[:3]:
+            msg = str(r["error"]).strip().replace("\n", " ")[:200]
+            console.print(f"  [red]{r.get('repo_name', '?')}[/red]: {msg}")
 
 
 @app.command("show-sample")
@@ -308,6 +328,9 @@ def show_sample(
     keep_clones: bool = typer.Option(False, help="Keep clone after run"),
     url_scheme: str = typer.Option(
         "as-is", help="Rewrite repo URL for cloning: ssh|https|as-is (use ssh to clone with SSH keys)"
+    ),
+    ssh_port: Optional[int] = typer.Option(
+        None, help="Non-standard SSH port of your git server (used with --url-scheme ssh)"
     ),
 ) -> None:
     """Full agent run for one repo. Writes deliverable to output/ and prints summary."""
@@ -321,7 +344,11 @@ def show_sample(
     async def _run():
         async with httpx.AsyncClient() as client:
             try:
-                await clone_repo(rewrite_url(repo_url, url_scheme), clone_dest)
+                await clone_repo(
+                    rewrite_url(repo_url, url_scheme, ssh_port),
+                    clone_dest,
+                    timeout=settings.clone_timeout,
+                )
                 result = await run_agent(
                     repo_path=clone_dest,
                     repo_url=repo_url,
