@@ -161,6 +161,8 @@ Hard rules:
 
 Collect ~{settings.target_loc} LOC (±{settings.loc_tolerance}) of code samples that are representative of the codebase's typical quality — not cherry-picked best files. Include messy and boring parts proportionally.
 
+HARD CAP: {settings.max_total_loc} LOC total. save_sample will reject any file that would push the total above it — do not try; once you are near {settings.target_loc}, stop saving and finish. Overshooting is as wrong as undershooting.
+
 ## Select files
 
 - Cover every significant module/layer: business logic, data access, API handlers, tests, utilities.
@@ -293,13 +295,33 @@ def _exec_save_sample(
         chunk = all_lines
         is_partial = False
 
+    loc = _count_loc_lines(chunk, _lang_from_path(path))
+    current_total = sum(f.loc_taken for f in ctx.saved_files)
+    cap = ctx.settings.max_total_loc
+    if current_total + loc > cap:
+        if current_total >= ctx.settings.target_loc:
+            return {
+                "saved": False,
+                "error": (
+                    f"LOC budget exhausted ({current_total}/{cap} max). You have enough — "
+                    f"do not save more files. Call write_summary and finish now."
+                ),
+            }
+        return {
+            "saved": False,
+            "error": (
+                f"Saving this file ({loc} LOC) would exceed the {cap} LOC hard cap "
+                f"(currently {current_total}). Save a smaller file, or a partial range "
+                f"via start_line/end_line, to land near {ctx.settings.target_loc} total."
+            ),
+        }
+
     dest = ctx.deliverable_dir / "samples" / path
     dest.parent.mkdir(parents=True, exist_ok=True)
     dest.write_text("".join(chunk), encoding="utf-8")
 
-    loc = _count_loc_lines(chunk, _lang_from_path(path))
     rank = len(ctx.saved_files) + 1
-    running_total = sum(f.loc_taken for f in ctx.saved_files) + loc
+    running_total = current_total + loc
 
     ctx.saved_files.append(AgentSavedFile(
         path=path,
@@ -542,8 +564,10 @@ async def run_agent(
     for iteration in range(settings.agent_max_iterations):
         iterations = iteration + 1
 
-        # Nudge if agent has been exploring without saving for too long
+        # Nudge if agent has been exploring without saving for too long,
+        # over-collecting, or running out of iterations under target.
         saves_so_far = len(ctx.saved_files)
+        saved_loc = sum(f.loc_taken for f in ctx.saved_files)
         turns_since_save = iteration - (last_save_iteration + 1)
         if saves_so_far == 0 and iteration >= 3:
             nudge = (
@@ -554,8 +578,14 @@ async def run_agent(
             )
             messages.append({"role": "user", "content": nudge})
             agent_log.append({"turn": iteration + 1, "nudge": nudge})
-        elif saves_so_far > 0 and turns_since_save >= 4:
-            saved_loc = sum(f.loc_taken for f in ctx.saved_files)
+        elif saved_loc >= settings.target_loc + settings.loc_tolerance:
+            nudge = (
+                f"⚠️ You have {saved_loc} LOC — the target is {settings.target_loc}. "
+                f"STOP saving files. Call write_summary and finish now."
+            )
+            messages.append({"role": "user", "content": nudge})
+            agent_log.append({"turn": iteration + 1, "nudge": nudge})
+        elif saves_so_far > 0 and turns_since_save >= 4 and saved_loc < settings.target_loc:
             remaining = max(0, settings.target_loc - saved_loc)
             nudge = (
                 f"⚠️ You have saved {saves_so_far} files ({saved_loc} LOC) but haven't saved "
@@ -566,10 +596,8 @@ async def run_agent(
             agent_log.append({"turn": iteration + 1, "nudge": nudge})
         elif (
             iteration >= settings.agent_max_iterations - 5
-            and sum(f.loc_taken for f in ctx.saved_files)
-            < settings.target_loc - settings.loc_tolerance
+            and saved_loc < settings.target_loc - settings.loc_tolerance
         ):
-            saved_loc = sum(f.loc_taken for f in ctx.saved_files)
             nudge = (
                 f"⚠️ Only {settings.agent_max_iterations - iteration} iterations left and you "
                 f"have {saved_loc}/{settings.target_loc} LOC. Stop exploring — save your best "

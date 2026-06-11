@@ -249,3 +249,60 @@ def test_url_to_folder_name_strips_trailing_slash():
 
 def test_url_to_folder_name_ssh():
     assert url_to_folder_name("git@github.com:owner/repo.git") == "github.com__owner__repo"
+
+
+# ---------------------------------------------------------------------------
+# save_sample hard cap (max_total_loc)
+# ---------------------------------------------------------------------------
+
+def _make_ctx_capped(repo_path: Path, deliverable_dir: Path, **settings_kwargs) -> _ToolCtx:
+    base = {"openrouter_api_key": "x"}
+    base.update(settings_kwargs)
+    return _ToolCtx(
+        repo_path=repo_path,
+        deliverable_dir=deliverable_dir,
+        settings=Settings(**base),
+    )
+
+
+def test_save_sample_rejects_when_over_hard_cap():
+    """A save pushing the total past max_total_loc is rejected and not written."""
+    with tempfile.TemporaryDirectory() as tmp:
+        repo = Path(tmp) / "repo"
+        out = Path(tmp) / "out"
+        repo.mkdir()
+        (repo / "a.py").write_text("".join(f"a{i} = {i}\n" for i in range(10)))
+        (repo / "b.py").write_text("".join(f"b{i} = {i}\n" for i in range(10)))
+
+        ctx = _make_ctx_capped(repo, out, target_loc=8, loc_tolerance=2, max_total_loc=15)
+
+        ok = _exec_save_sample(ctx, "a.py", "business")
+        assert ok["saved"] is True
+
+        # second save would make 20 > 15 cap -> rejected, file absent
+        rejected = _exec_save_sample(ctx, "b.py", "business")
+        assert rejected["saved"] is False
+        assert "write_summary and finish" in rejected["error"]
+        assert not (out / "samples" / "b.py").exists()
+        assert len(ctx.saved_files) == 1
+
+
+def test_save_sample_oversized_single_file_suggests_partial():
+    """A single file bigger than the cap is rejected with a partial-range hint."""
+    with tempfile.TemporaryDirectory() as tmp:
+        repo = Path(tmp) / "repo"
+        out = Path(tmp) / "out"
+        repo.mkdir()
+        (repo / "huge.py").write_text("".join(f"x{i} = {i}\n" for i in range(100)))
+
+        ctx = _make_ctx_capped(repo, out, target_loc=30, loc_tolerance=5, max_total_loc=50)
+
+        rejected = _exec_save_sample(ctx, "huge.py", "business")
+        assert rejected["saved"] is False
+        assert "start_line/end_line" in rejected["error"]
+        assert len(ctx.saved_files) == 0
+
+        # a partial range within budget still works
+        ok = _exec_save_sample(ctx, "huge.py", "business", start_line=1, end_line=30)
+        assert ok["saved"] is True
+        assert ctx.saved_files[0].loc_taken == 30

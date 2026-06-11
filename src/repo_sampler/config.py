@@ -13,6 +13,9 @@ class Settings(BaseSettings):
     # Sample targets (injected into agent system prompt as instructions)
     target_loc: int = 5000
     loc_tolerance: int = 300
+    # Hard ceiling enforced by save_sample itself: a save that would push the
+    # running total above this is rejected, the agent is told to finish.
+    max_total_loc: int = 6500
     test_share_min: float = 0.1
     test_share_max: float = 0.2
 
