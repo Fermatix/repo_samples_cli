@@ -1,7 +1,9 @@
 import asyncio
+import contextlib
 import os
 import re
 import shutil
+import signal
 from pathlib import Path
 
 from loguru import logger
@@ -54,9 +56,20 @@ def _clone_env() -> dict:
         "GIT_TERMINAL_PROMPT": "0",
         "GIT_SSH_COMMAND": os.environ.get(
             "GIT_SSH_COMMAND",
-            "ssh -oBatchMode=yes -oStrictHostKeyChecking=accept-new",
+            "ssh -oBatchMode=yes -oStrictHostKeyChecking=accept-new -oConnectTimeout=10",
         ),
     }
+
+
+def _kill_proc_tree(proc) -> None:
+    # git spawns ssh/credential helpers that inherit the stdout/stderr pipes;
+    # killing only git leaves communicate() blocked until the child exits on
+    # its own (minutes for a dead host). Kill the whole process group.
+    try:
+        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+    except Exception:
+        with contextlib.suppress(ProcessLookupError):
+            proc.kill()
 
 
 async def clone_repo(url: str, dest: Path, timeout: int = 900) -> Path:
@@ -71,12 +84,14 @@ async def clone_repo(url: str, dest: Path, timeout: int = 900) -> Path:
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
         env=_clone_env(),
+        start_new_session=True,
     )
     try:
         stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
     except asyncio.TimeoutError:
-        proc.kill()
-        await proc.communicate()
+        _kill_proc_tree(proc)
+        with contextlib.suppress(asyncio.TimeoutError):
+            await asyncio.wait_for(proc.communicate(), timeout=5)
         raise CloneError(url, f"timeout after {timeout}s")
 
     if proc.returncode != 0:

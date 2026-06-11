@@ -16,7 +16,7 @@ from .agent import AgentResult, AuthError, run_agent, url_to_folder_name
 from .anonymizer import run_anonymizer
 from .cloner import CloneError, cleanup_repo, clone_repo, rewrite_url
 from .config import Settings
-from .writer import append_jsonl_with_meta, write_parquet
+from .writer import append_jsonl_with_meta, remove_record, write_parquet
 
 app = typer.Typer(help="CLI tool for extracting representative code samples from git repositories.")
 console = Console()
@@ -155,6 +155,10 @@ async def _process_repo(
                 # would mark the repo as processed and skip it on every re-run.
                 logger.error(f"[{repo_name}] agent saved 0 LOC after retry, not recording")
                 _write_error(errors_path, url, "agent_empty", "agent saved 0 LOC after retry")
+                # A --force re-run cleared the old deliverable folder; its old
+                # manifest record would now point at an empty folder.
+                if remove_record(output_dir / "samples.jsonl", url):
+                    logger.warning(f"[{repo_name}] removed stale samples.jsonl record")
                 return {"repo_url": url, "repo_name": repo_name, "folder_name": folder_name,
                         "error": "agent saved 0 LOC after retry"}
 

@@ -1,50 +1,36 @@
 from __future__ import annotations
 
 import json
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 
 import jsonlines
+from loguru import logger
 
 from .agent import AgentResult
 
 
-def append_jsonl(
-    result: AgentResult,
-    path: Path,
-) -> None:
-    test_loc = sum(f.loc_taken for f in result.files if f.layer == "test")
-    test_share = test_loc / result.total_loc if result.total_loc else 0.0
+def _read_manifest(path: Path) -> list[dict]:
+    # skip_invalid: one corrupt line (e.g. from a kill mid-append in old
+    # versions) must not poison every future manifest write.
+    if not path.exists():
+        return []
+    with jsonlines.open(path) as reader:
+        records = [r for r in reader.iter(type=dict, skip_invalid=True)]
+    raw_lines = sum(1 for line in path.read_text(errors="replace").splitlines() if line.strip())
+    if raw_lines != len(records):
+        logger.warning(f"Dropped {raw_lines - len(records)} corrupt line(s) from {path}")
+    return records
 
-    record = {
-        "repo_url": result.repo_url,
-        "repo_name": result.repo_name,
-        "language": "",
-        "total_loc": result.total_loc,
-        "file_count": len(result.files),
-        "test_share": round(test_share, 4),
-        "files": [
-            {
-                "path": f.path,
-                "layer": f.layer,
-                "rank": f.rank,
-                "loc_taken": f.loc_taken,
-                "is_partial": f.is_partial,
-            }
-            for f in result.files
-        ],
-        "repo_summary": result.summary_md,
-        "meta": {
-            "model": "",           # filled by caller
-            "agent_iterations": result.agent_iterations,
-            "bash_calls": result.bash_calls,
-            "sampled_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-        },
-    }
 
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with jsonlines.open(path, mode="a") as writer:
-        writer.write(record)
+def _rewrite_manifest(path: Path, records: list[dict]) -> None:
+    # Write-then-rename: a kill mid-rewrite must never truncate the manifest.
+    tmp = path.with_name(path.name + ".tmp")
+    with jsonlines.open(tmp, mode="w") as writer:
+        for r in records:
+            writer.write(r)
+    os.replace(tmp, path)
 
 
 def append_jsonl_with_meta(
@@ -86,15 +72,23 @@ def append_jsonl_with_meta(
 
     path.parent.mkdir(parents=True, exist_ok=True)
     # Re-runs (--force, zero-LOC retries) must replace the repo's earlier
-    # record, not append a duplicate line.
-    existing = []
-    if path.exists():
-        with jsonlines.open(path) as reader:
-            existing = [r for r in reader if r.get("repo_url") != result.repo_url]
-    with jsonlines.open(path, mode="w") as writer:
-        for r in existing:
-            writer.write(r)
-        writer.write(record)
+    # record, not append a duplicate line. NOTE: correctness of the
+    # read-filter-rewrite relies on it staying synchronous — concurrent asyncio
+    # workers call it directly and cannot interleave a no-await block. Do not
+    # move it to a thread or executor.
+    existing = [r for r in _read_manifest(path) if r.get("repo_url") != result.repo_url]
+    _rewrite_manifest(path, existing + [record])
+
+
+def remove_record(path: Path, repo_url: str) -> bool:
+    """Drop a repo's manifest record, e.g. when a re-run cleared its
+    deliverable folder but then produced nothing. Returns True if removed."""
+    records = _read_manifest(path)
+    kept = [r for r in records if r.get("repo_url") != repo_url]
+    if len(kept) == len(records):
+        return False
+    _rewrite_manifest(path, kept)
+    return True
 
 
 def write_parquet(output_dir: Path) -> None:

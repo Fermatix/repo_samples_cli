@@ -119,16 +119,31 @@ def test_rewrite_ssh_with_custom_port():
         "git@git.example.com:group/sub/repo.git"
 
 
-def test_clone_repo_timeout_is_configurable():
+def test_clone_repo_timeout_is_configurable(monkeypatch, tmp_path):
     """Giant repos need more than the old hardcoded 120s; timeout is a param now."""
-    with tempfile.TemporaryDirectory() as tmp:
-        dest = Path(tmp) / "clones" / "dest"
-        with pytest.raises(CloneError, match="timeout after 1s"):
-            # ssh to a TEST-NET address hangs until our timeout fires
-            asyncio.run(clone_repo("git@192.0.2.1:owner/repo.git", dest, timeout=1))
+    class FakeProc:
+        pid = -1  # getpgid(-1) fails -> falls back to kill()
+
+        def __init__(self):
+            self._killed = asyncio.Event()
+
+        async def communicate(self):
+            await self._killed.wait()  # hangs until killed
+            return b"", b""
+
+        def kill(self):
+            self._killed.set()
+
+    async def fake_exec(*args, **kwargs):
+        return FakeProc()
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+    with pytest.raises(CloneError, match="timeout after 1s"):
+        asyncio.run(clone_repo("git@h.com:o/r.git", tmp_path / "clones" / "d", timeout=1))
 
 
-def test_clone_timeout_setting_default():
+def test_clone_timeout_setting_default(monkeypatch):
+    monkeypatch.delenv("CLONE_TIMEOUT", raising=False)
     from repo_sampler.config import Settings
     assert Settings(_env_file=None).clone_timeout == 900
 

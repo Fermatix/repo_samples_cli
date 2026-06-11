@@ -1,7 +1,7 @@
 import jsonlines
 
 from repo_sampler.agent import AgentResult
-from repo_sampler.writer import append_jsonl_with_meta
+from repo_sampler.writer import append_jsonl_with_meta, remove_record
 
 
 def _result(url: str, total_loc: int) -> AgentResult:
@@ -40,3 +40,28 @@ def test_rerun_replaces_existing_record_instead_of_duplicating(tmp_path):
     by_url = {r["repo_url"]: r for r in records}
     assert by_url["https://h.com/o/a"]["total_loc"] == 6100
     assert by_url["https://h.com/o/b"]["total_loc"] == 4800
+    assert not path.with_name(path.name + ".tmp").exists()
+
+
+def test_corrupt_line_does_not_block_future_writes(tmp_path):
+    """A truncated/garbage line (e.g. kill mid-append in old versions) must not
+    poison every subsequent manifest write."""
+    path = tmp_path / "samples.jsonl"
+    append_jsonl_with_meta(_result("https://h.com/o/a", 5000), path, model="m")
+    with open(path, "a") as f:
+        f.write('{"truncated: \n')
+    append_jsonl_with_meta(_result("https://h.com/o/b", 4800), path, model="m")
+
+    records = _read(path)
+    assert [r["repo_url"] for r in records] == ["https://h.com/o/a", "https://h.com/o/b"]
+
+
+def test_remove_record(tmp_path):
+    path = tmp_path / "samples.jsonl"
+    append_jsonl_with_meta(_result("https://h.com/o/a", 5000), path, model="m")
+    append_jsonl_with_meta(_result("https://h.com/o/b", 4800), path, model="m")
+
+    assert remove_record(path, "https://h.com/o/a") is True
+    assert [r["repo_url"] for r in _read(path)] == ["https://h.com/o/b"]
+    assert remove_record(path, "https://h.com/o/a") is False  # already gone
+    assert remove_record(tmp_path / "missing.jsonl", "x") is False
