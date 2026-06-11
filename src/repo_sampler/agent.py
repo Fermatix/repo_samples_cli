@@ -167,7 +167,7 @@ Collect ~{settings.target_loc} LOC (±{settings.loc_tolerance}) of code samples 
 - Prefer medium-size files (100–500 LOC). Whole files preferred; partial extracts only for >800 LOC files.
 - Tests: {int(settings.test_share_min * 100)}–{int(settings.test_share_max * 100)}% of total LOC.
 - Stratify by module, layer, age (git log), and author when possible.
-- **Quality over quantity of files**: if the repo has few substantive files, it is better to sample 1–2k LOC from the best available files than to pad the selection with many small or trivial files. Do NOT fill the budget with __init__.py, thin wrappers, or files under 30 LOC just to reach the LOC target. An honest under-sample of 1–2k LOC is preferable to a bloated sample full of noise.
+- **Quality over quantity of files**: do NOT fill the budget with __init__.py, thin wrappers, or files under 30 LOC just to reach the LOC target. However, under-sampling is acceptable ONLY when the repository genuinely contains less than ~{settings.target_loc} LOC of substantive code. If the repo clearly has at least {settings.target_loc} LOC of real source files, you MUST keep saving until you reach at least {settings.target_loc - settings.loc_tolerance} LOC — ordinary, boring production code counts; it does not need to be impressive to be included.
 
 ## Exclude
 
@@ -424,6 +424,12 @@ async def _call_openrouter(
 
         if resp.status_code == 401:
             raise AuthError("HTTP 401: invalid API key")
+        if resp.status_code in (402, 403):
+            # OpenRouter returns these when the key is blocked or its spending
+            # limit is exhausted — every subsequent call will fail the same way.
+            raise AuthError(
+                f"HTTP {resp.status_code}: OpenRouter key blocked or spending limit reached"
+            )
         if resp.status_code in (429, 500, 502, 503):
             wait = 2 ** attempt
             logger.warning(f"HTTP {resp.status_code}, retrying in {wait}s")
@@ -555,6 +561,19 @@ async def run_agent(
                 f"⚠️ You have saved {saves_so_far} files ({saved_loc} LOC) but haven't saved "
                 f"anything in {turns_since_save} turns. You still need ~{remaining} more LOC. "
                 f"Save more files now."
+            )
+            messages.append({"role": "user", "content": nudge})
+            agent_log.append({"turn": iteration + 1, "nudge": nudge})
+        elif (
+            iteration >= settings.agent_max_iterations - 5
+            and sum(f.loc_taken for f in ctx.saved_files)
+            < settings.target_loc - settings.loc_tolerance
+        ):
+            saved_loc = sum(f.loc_taken for f in ctx.saved_files)
+            nudge = (
+                f"⚠️ Only {settings.agent_max_iterations - iteration} iterations left and you "
+                f"have {saved_loc}/{settings.target_loc} LOC. Stop exploring — save your best "
+                f"remaining candidate files NOW, then write_summary and finish."
             )
             messages.append({"role": "user", "content": nudge})
             agent_log.append({"turn": iteration + 1, "nudge": nudge})

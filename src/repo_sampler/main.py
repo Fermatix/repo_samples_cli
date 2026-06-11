@@ -14,7 +14,7 @@ from rich.table import Table
 
 from .agent import AgentResult, AuthError, run_agent, url_to_folder_name
 from .anonymizer import run_anonymizer
-from .cloner import CloneError, cleanup_repo, clone_repo
+from .cloner import CloneError, cleanup_repo, clone_repo, rewrite_url
 from .config import Settings
 from .writer import append_jsonl_with_meta, write_parquet
 
@@ -36,11 +36,13 @@ def _setup_logging(output_dir: Path | None = None) -> None:
 
 
 def _load_repos(repos_file: Path) -> list[str]:
-    return [
+    urls = [
         line.strip()
         for line in repos_file.read_text().splitlines()
         if line.strip() and not line.startswith("#")
     ]
+    # Dedupe preserving order: a URL listed twice must not race itself.
+    return list(dict.fromkeys(urls))
 
 
 def _load_processed(jsonl_path: Path) -> set[str]:
@@ -52,7 +54,9 @@ def _load_processed(jsonl_path: Path) -> set[str]:
         with jsonlines.open(jsonl_path) as reader:
             for record in reader:
                 url = record.get("repo_url", "")
-                if url:
+                # Zero-LOC records are failed runs, not completed work — leave
+                # them out of the processed set so a re-run retries them.
+                if url and record.get("total_loc", 0) > 0:
                     processed.add(url)
     except Exception:
         pass
@@ -93,16 +97,21 @@ async def _process_repo(
     dry_run: bool,
     clone_sem: asyncio.Semaphore,
     errors_path: Path,
+    url_scheme: str = "as-is",
 ) -> dict | None:
     repo_name = url.rstrip("/").split("/")[-1]
+    # Naming always derives from the original URL so output folders stay
+    # stable regardless of the clone scheme.
     folder_name = url_to_folder_name(url)
-    clone_dest = Path(settings.clone_dir) / repo_name
+    # Clone into the URL-unique folder name: repos sharing a leaf name (e.g.
+    # several "android" repos in different namespaces) must not collide.
+    clone_dest = Path(settings.clone_dir) / folder_name
 
     async with clone_sem:
         stage = "clone"
         try:
             logger.info(f"[{repo_name}] cloning...")
-            await clone_repo(url, clone_dest)
+            await clone_repo(rewrite_url(url, url_scheme), clone_dest)
 
             if dry_run:
                 proc = await asyncio.create_subprocess_exec(
@@ -125,6 +134,24 @@ async def _process_repo(
                 settings=settings,
                 client=client,
             )
+
+            if result.total_loc == 0:
+                logger.warning(f"[{repo_name}] agent saved 0 LOC, retrying once...")
+                result = await run_agent(
+                    repo_path=clone_dest,
+                    repo_url=url,
+                    output_dir=output_dir,
+                    settings=settings,
+                    client=client,
+                )
+
+            if result.total_loc == 0:
+                # Do not record the failure in samples.jsonl: a zero-LOC record
+                # would mark the repo as processed and skip it on every re-run.
+                logger.error(f"[{repo_name}] agent saved 0 LOC after retry, not recording")
+                _write_error(errors_path, url, "agent_empty", "agent saved 0 LOC after retry")
+                return {"repo_url": url, "repo_name": repo_name, "folder_name": folder_name,
+                        "error": "agent saved 0 LOC after retry"}
 
             stage = "write"
             commit_sha = await _get_commit_sha(clone_dest)
@@ -178,6 +205,9 @@ def run(
     force: bool = typer.Option(False, help="Re-process already completed repos"),
     dry_run: bool = typer.Option(False, help="Clone only, no agent"),
     keep_clones: bool = typer.Option(False, help="Keep clones after processing"),
+    url_scheme: str = typer.Option(
+        "as-is", help="Rewrite repo URLs for cloning: ssh|https|as-is (use ssh to clone with SSH keys)"
+    ),
 ) -> None:
     """Process repos from file. Already completed repos are skipped automatically (use --force to override)."""
     output.mkdir(parents=True, exist_ok=True)
@@ -205,7 +235,7 @@ def run(
     )
 
     results = asyncio.run(
-        _run_all(repos, output, settings, keep_clones, dry_run, errors_path)
+        _run_all(repos, output, settings, keep_clones, dry_run, errors_path, url_scheme)
     )
 
     if format == "parquet":
@@ -221,6 +251,7 @@ async def _run_all(
     keep_clones: bool,
     dry_run: bool,
     errors_path: Path,
+    url_scheme: str = "as-is",
 ) -> list[dict]:
     clone_sem = asyncio.Semaphore(settings.clone_workers)
     async with httpx.AsyncClient() as client:
@@ -228,6 +259,7 @@ async def _run_all(
             _process_repo(
                 url, output_dir, settings, client,
                 keep_clones, dry_run, clone_sem, errors_path,
+                url_scheme=url_scheme,
             )
             for url in repos
         ]
@@ -274,6 +306,9 @@ def show_sample(
     repo_url: str = typer.Argument(..., help="Repository URL"),
     output: Path = typer.Option(Path("./output"), help="Output directory"),
     keep_clones: bool = typer.Option(False, help="Keep clone after run"),
+    url_scheme: str = typer.Option(
+        "as-is", help="Rewrite repo URL for cloning: ssh|https|as-is (use ssh to clone with SSH keys)"
+    ),
 ) -> None:
     """Full agent run for one repo. Writes deliverable to output/ and prints summary."""
     output.mkdir(parents=True, exist_ok=True)
@@ -281,12 +316,12 @@ def show_sample(
     settings = Settings()
 
     repo_name = repo_url.rstrip("/").split("/")[-1]
-    clone_dest = Path(settings.clone_dir) / repo_name
+    clone_dest = Path(settings.clone_dir) / url_to_folder_name(repo_url)
 
     async def _run():
         async with httpx.AsyncClient() as client:
             try:
-                await clone_repo(repo_url, clone_dest)
+                await clone_repo(rewrite_url(repo_url, url_scheme), clone_dest)
                 result = await run_agent(
                     repo_path=clone_dest,
                     repo_url=repo_url,

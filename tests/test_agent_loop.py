@@ -226,3 +226,29 @@ async def test_save_sample_bad_path_does_not_crash_loop():
         assert result.repo_name == "repo"
         # No files were saved (path was bad)
         assert len(result.files) == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status_code", [402, 403])
+async def test_auth_error_on_spending_limit(status_code):
+    """402/403 (key blocked / spending cap) must abort like 401, not crash per-repo."""
+    with tempfile.TemporaryDirectory() as tmp:
+        repo = Path(tmp) / "repo"
+        out = Path(tmp) / "out"
+        repo.mkdir()
+
+        settings = _make_settings()
+
+        with respx.mock:
+            respx.post("https://openrouter.ai/api/v1/chat/completions").mock(
+                return_value=httpx.Response(status_code)
+            )
+            async with httpx.AsyncClient() as client:
+                with pytest.raises(AuthError):
+                    await run_agent(
+                        repo_path=repo,
+                        repo_url="https://github.com/owner/repo",
+                        output_dir=out,
+                        settings=settings,
+                        client=client,
+                    )
