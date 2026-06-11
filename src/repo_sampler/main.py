@@ -86,10 +86,15 @@ def _primary_share(result: AgentResult) -> float:
 
 
 def _result_failure(result: AgentResult, settings: Settings) -> tuple[str, str] | None:
-    """(stage, message) when the agent result must be rejected, else None."""
+    """(stage, message) when the agent result must be rejected, else None.
+
+    The primary-language share is a HARD requirement only when the language
+    was forced via --primary-language (the redo-rejected-samples flow); for
+    auto-detected primaries it is a soft goal enforced by prompts/nudges only.
+    """
     if result.total_loc == 0:
         return ("agent_empty", "agent saved 0 LOC")
-    if result.primary_language:
+    if result.primary_language and result.primary_forced:
         share = _primary_share(result)
         if share < settings.primary_share_min:
             ploc = round(share * result.total_loc)
@@ -224,6 +229,17 @@ async def _process_repo(
 
             test_loc = sum(f.loc_taken for f in result.files if f.layer == "test")
             test_share = test_loc / result.total_loc if result.total_loc else 0.0
+
+            if (
+                result.primary_language
+                and not result.primary_forced
+                and _primary_share(result) < settings.primary_share_min
+            ):
+                logger.warning(
+                    f"[{repo_name}] primary code language {result.primary_language} "
+                    f"share {_primary_share(result):.0%} is below the "
+                    f"{settings.primary_share_min:.0%} goal (soft — recorded anyway)"
+                )
 
             return {
                 "repo_url": url,

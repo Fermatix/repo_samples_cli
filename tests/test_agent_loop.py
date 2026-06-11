@@ -293,12 +293,13 @@ async def test_language_distribution_injected_into_first_message():
                 )
 
         first_user = captured[0]["messages"][1]["content"]
-        assert "PRIMARY LANGUAGE: JavaScript" in first_user
+        assert "PRIMARY CODE LANGUAGE: JavaScript" in first_user
         assert "- JavaScript: 80.0%" in first_user
         assert "- CSS: 20.0%" in first_user
-        assert "at least 20%" in first_user
-        # system prompt carries the static rules
-        assert "Language coverage — HARD REQUIREMENT" in captured[0]["messages"][0]["content"]
+        assert "Aim for at least 20%" in first_user
+        # system prompt carries the static rules (soft variant by default)
+        assert "## Language focus" in captured[0]["messages"][0]["content"]
+        assert "HARD REQUIREMENT" not in captured[0]["messages"][0]["content"]
         assert result.primary_language == "JavaScript"
         assert result.lang_stats_source == "walk"
         assert result.primary_forced is False
@@ -375,7 +376,7 @@ async def test_primary_language_nudge_fires():
 
         log = json.loads((out / result.folder_name / "agent_log.json").read_text())
         nudges = [e["nudge"] for e in log["agent_log"] if "nudge" in e]
-        assert any("LANGUAGE REQUIREMENT FAILING" in n for n in nudges)
+        assert any("LANGUAGE FOCUS" in n for n in nudges)
         assert any("Python" in n for n in nudges)
 
 
@@ -451,7 +452,7 @@ async def test_untrackable_scc_primary_falls_back_to_trackable(monkeypatch):
                 )
 
         assert result.primary_language == "JavaScript"
-        assert "PRIMARY LANGUAGE: JavaScript" in captured[0]["messages"][1]["content"]
+        assert "PRIMARY CODE LANGUAGE: JavaScript" in captured[0]["messages"][1]["content"]
 
 
 @pytest.mark.asyncio
@@ -496,6 +497,7 @@ async def test_unrecoverable_language_state_ends_run_early():
 
         settings = _make_settings(
             lang_scan_use_scc=False, target_loc=40, loc_tolerance=5, max_total_loc=45,
+            primary_language_override="Python",  # hard mode: abort applies
         )
         calls = 0
 
@@ -523,3 +525,38 @@ async def test_unrecoverable_language_state_ends_run_early():
         log = json.loads((out / result.folder_name / "agent_log.json").read_text())
         aborted = [e for e in log["agent_log"] if "aborted" in e]
         assert aborted and "unrecoverable" in aborted[0]["aborted"]
+
+
+@pytest.mark.asyncio
+async def test_css_plurality_skipped_for_real_code_language():
+    """CSS/markup plurality must not become the focus — the largest real code
+    language is, with a note about the plurality."""
+    with tempfile.TemporaryDirectory() as tmp:
+        repo = Path(tmp) / "repo"
+        out = Path(tmp) / "out"
+        repo.mkdir()
+        (repo / "style.css").write_text("a {}\n" * 60)
+        (repo / "app.php").write_text("<?php\n" * 40)
+
+        settings = _make_settings(lang_scan_use_scc=False)
+        captured: list[dict] = []
+
+        def handler(request):
+            captured.append(json.loads(request.content))
+            return httpx.Response(200, json=_assistant_stop())
+
+        with respx.mock:
+            respx.post("https://openrouter.ai/api/v1/chat/completions").mock(side_effect=handler)
+            async with httpx.AsyncClient() as client:
+                result = await run_agent(
+                    repo_path=repo,
+                    repo_url="https://github.com/owner/repo",
+                    output_dir=out,
+                    settings=settings,
+                    client=client,
+                )
+
+        first_user = captured[0]["messages"][1]["content"]
+        assert result.primary_language == "PHP"
+        assert "PRIMARY CODE LANGUAGE: PHP" in first_user
+        assert "plurality language CSS is markup/style/data" in first_user

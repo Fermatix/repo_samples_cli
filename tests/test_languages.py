@@ -200,3 +200,29 @@ def test_is_trackable():
     assert is_trackable("Blade template")
     assert not is_trackable("Solidity")
     assert not is_trackable("")
+
+
+def test_pick_code_primary_skips_markup():
+    from repo_sampler.languages import pick_code_primary
+    stats = LanguageStats(
+        counts={"CSS": 600, "SVG": 200, "PHP": 150, "JavaScript": 50},
+        total=1000, primary="CSS", source="walk",
+    )
+    assert pick_code_primary(stats) == "PHP"
+
+
+def test_pick_code_primary_skips_untrackable_and_data():
+    from repo_sampler.languages import pick_code_primary
+    stats = LanguageStats(
+        counts={"JSON": 500, "Solidity": 300, "Markdown": 150, "Go": 50},
+        total=1000, primary="JSON", source="scc",
+    )
+    assert pick_code_primary(stats) == "Go"
+
+
+def test_pick_code_primary_none_when_no_code():
+    from repo_sampler.languages import pick_code_primary
+    stats = LanguageStats(
+        counts={"CSS": 600, "HTML": 400}, total=1000, primary="CSS", source="walk",
+    )
+    assert pick_code_primary(stats) is None

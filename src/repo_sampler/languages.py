@@ -188,6 +188,32 @@ _CANONICAL.update({lang.lower(): lang for lang in _FILENAME_TO_LANG.values()})
 # and therefore enforced as a primary language.
 TRACKABLE_LANGS = frozenset(_CANONICAL.values())
 
+# Markup / style / data / docs — never the sampling focus, even when they are
+# the plurality of the repo (e.g. CSS-heavy landing pages): the buyer pays for
+# real code, so the focus skips to the largest actual code language.
+NON_CODE_LANGS = frozenset({
+    "SVG", "CSS", "Sass", "LESS", "Stylus", "HTML", "JSON", "Markdown", "MDX",
+    "Plain Text", "CSV", "YAML", "TOML", "INI", "XML", "XML Schema",
+    "License", "Properties File", "Docker ignore",
+})
+
+
+def is_code_language(name: str) -> bool:
+    return bool(name) and name not in NON_CODE_LANGS
+
+
+def pick_code_primary(stats: "LanguageStats") -> str | None:
+    """The largest trackable REAL-CODE language to focus sampling on.
+
+    Skips markup/style/data plurality languages (CSS, SVG, JSON, ...) and
+    languages our path-tagging cannot recognize. None when the repo has no
+    trackable code at all.
+    """
+    for lang, _ in sorted(stats.counts.items(), key=lambda kv: (-kv[1], kv[0])):
+        if lang in TRACKABLE_LANGS and is_code_language(lang):
+            return lang
+    return None
+
 
 def canonicalize(name: str) -> str | None:
     """Map a case-insensitive language name to its scc spelling, or None."""

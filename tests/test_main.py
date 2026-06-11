@@ -53,7 +53,8 @@ from repo_sampler.config import Settings
 from repo_sampler.main import _result_failure
 
 
-def _result_with(files: list[tuple[str, int, str]], primary: str) -> AgentResult:
+def _result_with(files: list[tuple[str, int, str]], primary: str,
+                 forced: bool = True) -> AgentResult:
     saved = [
         AgentSavedFile(path=p, layer="business", loc_taken=loc, is_partial=False,
                        rank=i + 1, language=lang)
@@ -62,7 +63,7 @@ def _result_with(files: list[tuple[str, int, str]], primary: str) -> AgentResult
     return AgentResult(
         repo_url="https://h.com/o/r", repo_name="r", folder_name="h.com__o__r",
         files=saved, total_loc=sum(f.loc_taken for f in saved),
-        primary_language=primary,
+        primary_language=primary, primary_forced=forced,
     )
 
 
@@ -150,3 +151,13 @@ def test_rejected_deliverable_dir_is_deleted(tmp_path, monkeypatch):
     assert not (output / folder).exists()          # rejected deliverable removed
     assert (output / "errors.jsonl").exists()
     assert "agent_no_primary_lang" in (output / "errors.jsonl").read_text()
+
+
+def test_result_failure_soft_share_not_rejected():
+    """Auto-detected primary is a soft goal: low share is recorded, not rejected."""
+    settings = Settings(openrouter_api_key="k", primary_share_min=0.20)
+    result = _result_with(
+        [("a.php", 4900, "PHP"), ("b.js", 100, "JavaScript")],
+        primary="JavaScript", forced=False,
+    )
+    assert _result_failure(result, settings) is None
