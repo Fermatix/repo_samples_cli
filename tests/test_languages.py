@@ -226,3 +226,25 @@ def test_pick_code_primary_none_when_no_code():
         counts={"CSS": 600, "HTML": 400}, total=1000, primary="CSS", source="walk",
     )
     assert pick_code_primary(stats) is None
+
+
+def test_pick_code_primary_tie_break_and_floor():
+    from repo_sampler.languages import pick_code_primary
+    # tie -> alphabetical
+    stats = LanguageStats(counts={"PHP": 300, "Go": 300, "CSS": 400},
+                          total=1000, primary="CSS", source="walk")
+    assert pick_code_primary(stats) == "Go"
+    # below the 5% floor -> not a focus candidate
+    stats = LanguageStats(counts={"JSON": 970, "Go": 30},
+                          total=1000, primary="JSON", source="walk")
+    assert pick_code_primary(stats) is None
+
+
+def test_logicless_templates_are_not_code():
+    from repo_sampler.languages import is_code_language
+    assert not is_code_language("Mustache")
+    assert not is_code_language("Handlebars")
+    assert not is_code_language("Jupyter")
+    assert is_code_language("Twig Template")
+    assert is_code_language("Blade template")
+    assert is_code_language("SQL")

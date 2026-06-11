@@ -643,11 +643,19 @@ async def run_agent(
     if primary:
         share_min_pct = int(settings.primary_share_min * 100)
         exts = ", ".join(extensions_for(primary)) or "n/a"
-        plurality_note = (
-            f"(The repo's plurality language {stats.primary} is markup/style/data — "
-            f"focus the code sampling on {primary} instead.)\n"
-            if not primary_forced and stats.primary and stats.primary != primary else ""
-        )
+        if not primary_forced and stats.primary and stats.primary != primary:
+            from .languages import NON_CODE_LANGS
+            kind = (
+                "markup/style/data" if stats.primary in NON_CODE_LANGS
+                else "not trackable for sampling"
+            )
+            plurality_note = (
+                f"(The repo's plurality language {stats.primary} is {kind} — focus "
+                f"the code sampling on {primary} instead, but still include 1-2 "
+                f"representative {stats.primary} files so that language is present.)\n"
+            )
+        else:
+            plurality_note = ""
         if primary_forced:
             requirement = (
                 f"PRIMARY LANGUAGE: {primary} (file extensions: {exts}).\n"
@@ -668,6 +676,16 @@ async def run_agent(
             f"Repository language distribution (share of code lines):\n"
             f"{format_distribution(stats)}\n\n"
             f"{requirement}\n\nBegin."
+        )
+    elif stats.counts:
+        # Repo has a distribution but no trackable code language (e.g. pure
+        # markup/template sites) — show it, no focus requirement.
+        first_user_msg = (
+            f"Repository has been cloned to: {repo_path}\n\n"
+            f"Repository language distribution (share of code lines):\n"
+            f"{format_distribution(stats)}\n\n"
+            "No dominant real code language was detected — sample the most "
+            "substantive hand-written files this repo has.\n\nBegin."
         )
     else:
         first_user_msg = (
@@ -712,6 +730,10 @@ async def run_agent(
         elif (
             ctx.primary_language
             and saved_loc >= settings.target_loc // 2
+            # soft mode stops pushing the goal once the sample is over target —
+            # alternating "save more X" / "stop saving" would be contradictory
+            and (ctx.primary_hard
+                 or saved_loc < settings.target_loc + settings.loc_tolerance)
             and primary_loc < settings.primary_share_min * saved_loc
             and iteration - last_primary_nudge >= 3
         ):
@@ -789,6 +811,7 @@ async def run_agent(
                 f"{'minimum' if ctx.primary_hard else 'goal'} — prioritize "
                 f"{ctx.primary_language} files."
                 if ctx.primary_language
+                and last_primary_nudge < settings.agent_max_iterations  # not abandoned
                 and primary_loc < settings.primary_share_min * saved_loc else ""
             )
             nudge = (
@@ -810,6 +833,7 @@ async def run_agent(
                 f"{'minimum — those last saves must be' if ctx.primary_hard else 'goal — prefer'} "
                 f"{ctx.primary_language} files."
                 if ctx.primary_language
+                and last_primary_nudge < settings.agent_max_iterations  # not abandoned
                 and primary_loc < settings.primary_share_min * saved_loc else ""
             )
             nudge = (

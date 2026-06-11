@@ -191,11 +191,20 @@ TRACKABLE_LANGS = frozenset(_CANONICAL.values())
 # Markup / style / data / docs — never the sampling focus, even when they are
 # the plurality of the repo (e.g. CSS-heavy landing pages): the buyer pays for
 # real code, so the focus skips to the largest actual code language.
+# Logic-less template formats (Mustache, Handlebars, Jade, HAML) count as
+# markup; templates with real control flow (Twig, Smarty, Blade, ERB, Razor)
+# stay code. Jupyter is excluded because the newline walk weighs notebook
+# JSON, not the code inside.
 NON_CODE_LANGS = frozenset({
     "SVG", "CSS", "Sass", "LESS", "Stylus", "HTML", "JSON", "Markdown", "MDX",
     "Plain Text", "CSV", "YAML", "TOML", "INI", "XML", "XML Schema",
     "License", "Properties File", "Docker ignore",
+    "Mustache", "Handlebars", "Jade", "HAML", "Jupyter",
 })
+
+# A focus language must hold at least this share of the repo's counted lines —
+# nudging the agent toward a 3% language would demand more LOC than exists.
+MIN_FOCUS_SHARE = 0.05
 
 
 def is_code_language(name: str) -> bool:
@@ -205,12 +214,15 @@ def is_code_language(name: str) -> bool:
 def pick_code_primary(stats: "LanguageStats") -> str | None:
     """The largest trackable REAL-CODE language to focus sampling on.
 
-    Skips markup/style/data plurality languages (CSS, SVG, JSON, ...) and
-    languages our path-tagging cannot recognize. None when the repo has no
-    trackable code at all.
+    Skips markup/style/data plurality languages (CSS, SVG, JSON, ...),
+    languages our path-tagging cannot recognize, and languages below
+    MIN_FOCUS_SHARE of the repo. None when nothing qualifies.
     """
-    for lang, _ in sorted(stats.counts.items(), key=lambda kv: (-kv[1], kv[0])):
-        if lang in TRACKABLE_LANGS and is_code_language(lang):
+    if not stats.total:
+        return None
+    for lang, n in sorted(stats.counts.items(), key=lambda kv: (-kv[1], kv[0])):
+        if (lang in TRACKABLE_LANGS and is_code_language(lang)
+                and n / stats.total >= MIN_FOCUS_SHARE):
             return lang
     return None
 

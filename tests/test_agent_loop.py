@@ -560,3 +560,88 @@ async def test_css_plurality_skipped_for_real_code_language():
         assert result.primary_language == "PHP"
         assert "PRIMARY CODE LANGUAGE: PHP" in first_user
         assert "plurality language CSS is markup/style/data" in first_user
+
+
+@pytest.mark.asyncio
+async def test_hard_mode_prompt_and_nudge_wording(monkeypatch):
+    """--primary-language keeps the HARD variant: system prompt section and
+    REQUIREMENT FAILING nudge (regression: hard=primary_forced plumbing)."""
+    with tempfile.TemporaryDirectory() as tmp:
+        repo = Path(tmp) / "repo"
+        out = Path(tmp) / "out"
+        repo.mkdir()
+        (repo / "main.py").write_text("x = 1\n" * 100)
+        (repo / "notes.md").write_text("plain line\n" * 30)
+
+        settings = _make_settings(
+            lang_scan_use_scc=False, target_loc=40, loc_tolerance=5,
+            max_total_loc=200, primary_language_override="Python",
+        )
+        captured: list[dict] = []
+        responses = iter([
+            _assistant_with_tools([_tool_call("c1", "save_sample", {"path": "notes.md", "layer": "util"})]),
+            _assistant_with_tools([_summary_call("c2")]),
+            _assistant_with_tools([_tool_call("c3", "finish", {"message": "d", "total_loc": 30, "file_count": 1})]),
+        ])
+
+        def handler(request):
+            captured.append(json.loads(request.content))
+            return httpx.Response(200, json=next(responses))
+
+        with respx.mock:
+            respx.post("https://openrouter.ai/api/v1/chat/completions").mock(side_effect=handler)
+            async with httpx.AsyncClient() as client:
+                result = await run_agent(
+                    repo_path=repo,
+                    repo_url="https://github.com/owner/repo",
+                    output_dir=out,
+                    settings=settings,
+                    client=client,
+                )
+
+        assert "Language coverage — HARD REQUIREMENT" in captured[0]["messages"][0]["content"]
+        assert "HARD REQUIREMENT: at least 20%" in captured[0]["messages"][1]["content"]
+        log = json.loads((out / result.folder_name / "agent_log.json").read_text())
+        nudges = [e["nudge"] for e in log["agent_log"] if "nudge" in e]
+        assert any("LANGUAGE REQUIREMENT FAILING" in n for n in nudges)
+        assert result.primary_forced is True
+
+
+@pytest.mark.asyncio
+async def test_soft_unreachable_goal_does_not_abort():
+    """Soft mode: when the cap headroom can't fix the share, the run silences
+    the goal and completes normally instead of aborting."""
+    with tempfile.TemporaryDirectory() as tmp:
+        repo = Path(tmp) / "repo"
+        out = Path(tmp) / "out"
+        repo.mkdir()
+        (repo / "main.py").write_text("x = 1\n" * 100)
+        (repo / "notes.md").write_text("plain line\n" * 40)
+
+        settings = _make_settings(
+            lang_scan_use_scc=False, target_loc=40, loc_tolerance=50, max_total_loc=45,
+        )
+        responses = iter([
+            _assistant_with_tools([_tool_call("c1", "save_sample", {"path": "notes.md", "layer": "util"})]),
+            _assistant_with_tools([_summary_call("c2")]),
+            _assistant_with_tools([_tool_call("c3", "finish", {"message": "d", "total_loc": 40, "file_count": 1})]),
+        ])
+
+        with respx.mock:
+            respx.post("https://openrouter.ai/api/v1/chat/completions").mock(
+                side_effect=lambda req: httpx.Response(200, json=next(responses))
+            )
+            async with httpx.AsyncClient() as client:
+                result = await run_agent(
+                    repo_path=repo,
+                    repo_url="https://github.com/owner/repo",
+                    output_dir=out,
+                    settings=settings,
+                    client=client,
+                )
+
+        assert result.total_loc == 40           # run completed, sample kept
+        log = json.loads((out / result.folder_name / "agent_log.json").read_text())
+        assert not [e for e in log["agent_log"] if "aborted" in e]
+        focus_nudges = [e for e in log["agent_log"] if "LANGUAGE FOCUS" in e.get("nudge", "")]
+        assert not focus_nudges                  # silenced, not nagging
