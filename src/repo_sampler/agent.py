@@ -520,7 +520,33 @@ async def _call_openrouter(
             continue
 
         resp.raise_for_status()
-        return resp.json()
+        try:
+            return resp.json()
+        except (json.JSONDecodeError, ValueError):
+            # HTTP 200 but the body is not JSON (HTML error page, empty body,
+            # or an SSE/stream). Without logging the raw body this surfaces only
+            # as an opaque "Expecting value: line N column 1" parser error in
+            # errors.jsonl, with no way to tell what the API actually returned.
+            # Log the full body so it can be investigated, then retry like a
+            # transient 5xx. These responses are rare (a handful per run), so
+            # the full dump does not flood the log. A generous cap is kept only
+            # as a guard against a pathological multi-MB body, and any trim is
+            # made explicit (body_len + dropped count) so nothing is lost
+            # silently.
+            wait = 2 ** attempt
+            body = resp.text or ""
+            cap = 20000
+            shown = body if len(body) <= cap else body[:cap] + f"…[+{len(body) - cap} more chars]"
+            ctype = resp.headers.get("content-type", "")
+            rid = (resp.headers.get("x-request-id")
+                   or resp.headers.get("x-openrouter-request-id", ""))
+            logger.warning(
+                f"OpenRouter returned non-JSON body (status={resp.status_code} "
+                f"content-type={ctype!r} request-id={rid!r} body_len={len(body)}), "
+                f"retrying in {wait}s; body={shown!r}"
+            )
+            await asyncio.sleep(wait)
+            continue
 
     raise RuntimeError("OpenRouter call failed after 3 attempts")
 
