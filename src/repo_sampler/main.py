@@ -24,6 +24,30 @@ app = typer.Typer(help="CLI tool for extracting representative code samples from
 console = Console()
 
 
+def _silence_event_loop_teardown_noise() -> None:
+    """Suppress the benign 'Event loop is closed' tracebacks at shutdown.
+
+    asyncio finalizes subprocess transports (git clone, bash, scc, ...) in
+    ``__del__`` after ``asyncio.run`` has already closed the loop, so each one
+    raises ``RuntimeError('Event loop is closed')`` through ``sys.unraisablehook``.
+    These are harmless but flood the log with multi-line tracebacks and bury the
+    real DIAG lines. Drop exactly that case; defer everything else to the
+    default hook so genuine unraisable errors are still reported.
+    """
+    default_hook = sys.unraisablehook
+
+    def _hook(unraisable):  # noqa: ANN001 - matches sys.unraisablehook signature
+        exc = unraisable.exc_value
+        if isinstance(exc, RuntimeError) and "Event loop is closed" in str(exc):
+            return
+        default_hook(unraisable)
+
+    sys.unraisablehook = _hook
+
+
+_silence_event_loop_teardown_noise()
+
+
 def _setup_logging(output_dir: Path | None = None) -> None:
     logger.remove()
     if output_dir is not None:

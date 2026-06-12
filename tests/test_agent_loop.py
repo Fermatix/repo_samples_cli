@@ -645,3 +645,48 @@ async def test_soft_unreachable_goal_does_not_abort():
         assert not [e for e in log["agent_log"] if "aborted" in e]
         focus_nudges = [e for e in log["agent_log"] if "LANGUAGE FOCUS" in e.get("nudge", "")]
         assert not focus_nudges                  # silenced, not nagging
+
+
+@pytest.mark.asyncio
+async def test_non_json_response_is_retried_then_recovers():
+    """A 200 with a non-JSON body (HTML/empty/stream) must be retried, not crash.
+
+    Regression guard: previously resp.json() raised an opaque JSONDecodeError
+    that propagated out as a stage=agent failure with no body logged. Now the
+    call retries like a transient 5xx and the run completes normally.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        repo = Path(tmp) / "repo"
+        out = Path(tmp) / "out"
+        repo.mkdir()
+        (repo / "src").mkdir()
+        (repo / "src" / "engine.py").write_text("x = 1\ny = 2\nz = 3\n")
+
+        settings = _make_settings()
+        json_responses = iter([
+            _assistant_with_tools([_tool_call("c1", "save_sample", {"path": "src/engine.py", "layer": "business"})]),
+            _assistant_with_tools([_tool_call("c2", "finish", {"message": "done", "total_loc": 3, "file_count": 1})]),
+        ])
+        # First call returns a non-JSON 200 body; subsequent calls are valid JSON.
+        state = {"served_bad": False}
+
+        def _responder(req):
+            if not state["served_bad"]:
+                state["served_bad"] = True
+                return httpx.Response(200, text="<html>upstream error</html>")
+            return httpx.Response(200, json=next(json_responses))
+
+        with respx.mock:
+            respx.post("https://openrouter.ai/api/v1/chat/completions").mock(side_effect=_responder)
+            async with httpx.AsyncClient() as client:
+                result = await run_agent(
+                    repo_path=repo,
+                    repo_url="https://github.com/owner/repo",
+                    output_dir=out,
+                    settings=settings,
+                    client=client,
+                )
+
+        assert state["served_bad"] is True       # the bad body was actually served
+        assert result.total_loc == 3              # run recovered and saved the file
+        assert len(result.files) == 1
