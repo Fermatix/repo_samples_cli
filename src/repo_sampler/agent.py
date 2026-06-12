@@ -864,9 +864,24 @@ async def run_agent(
             continue
         finish_reason = choice.get("finish_reason", "")
 
+        # DIAG: per-turn API outcome — finish_reason, token usage, tool-call count.
+        usage = data.get("usage") or {}
+        _tc = message.get("tool_calls") or []
+        logger.info(
+            f"[{repo_name}] DIAG turn {iteration + 1}: finish_reason={finish_reason!r} "
+            f"tool_calls={len(_tc)} "
+            f"tokens(in/out)={usage.get('prompt_tokens','?')}/{usage.get('completion_tokens','?')} "
+            f"content_len={len(message.get('content') or '')}"
+        )
+
         # Append assistant message to history
         messages.append(message)
-        agent_log.append({"turn": iteration + 1, "assistant": message})
+        agent_log.append({
+            "turn": iteration + 1,
+            "assistant": message,
+            "finish_reason": finish_reason,
+            "usage": usage,
+        })
 
         if finish_reason == "length":
             logger.warning(f"[{repo_name}] agent hit context length limit at iteration {iteration + 1}")
@@ -875,7 +890,14 @@ async def run_agent(
         tool_calls = message.get("tool_calls") or []
 
         if not tool_calls:
-            logger.warning(f"[{repo_name}] agent stopped calling tools at iteration {iteration + 1}")
+            # DIAG: model returned prose instead of a tool call — log what it said,
+            # this is the usual reason a repo ends with 0 saved files.
+            content = (message.get("content") or "").strip()
+            logger.warning(
+                f"[{repo_name}] agent stopped calling tools at iteration {iteration + 1} "
+                f"(finish_reason={finish_reason!r}); model said: {content[:500]!r}"
+            )
+            agent_log.append({"turn": iteration + 1, "stopped_no_tool_calls": content[:2000]})
             break
 
         # Execute all tool calls in this turn
@@ -904,6 +926,19 @@ async def run_agent(
                     f"[{repo_name}] saved: {new_file.path} "
                     f"({new_file.layer}, {new_file.loc_taken} LOC"
                     f"{', partial' if new_file.is_partial else ''})"
+                )
+            elif tool_name == "save_sample":
+                # DIAG: a save that did NOT add a file — log the rejection reason.
+                # When a repo ends at 0 LOC this shows exactly why every save failed
+                # (file not found / already saved / 0 substantive LOC / over cap).
+                reason = result_str
+                try:
+                    reason = json.loads(result_str).get("error", result_str)
+                except Exception:
+                    pass
+                logger.warning(
+                    f"[{repo_name}] DIAG save_sample REJECTED "
+                    f"path={tool_args.get('path')!r}: {str(reason)[:300]}"
                 )
 
             messages.append({
@@ -937,6 +972,19 @@ async def run_agent(
         logger.warning(
             f"[{repo_name}] LOC budget not reached: {total_loc} < "
             f"{settings.target_loc - settings.loc_tolerance}"
+        )
+    # DIAG: when nothing was saved, summarize the run so the empty result is
+    # explainable from the log alone (no need to dig into agent_log.json).
+    if total_loc == 0:
+        save_attempts = sum(1 for e in agent_log if e.get("tool") == "save_sample")
+        bash_attempts = sum(1 for e in agent_log if e.get("tool") == "bash")
+        stopped = next((e["stopped_no_tool_calls"] for e in agent_log
+                        if "stopped_no_tool_calls" in e), None)
+        logger.error(
+            f"[{repo_name}] DIAG ZERO-LOC: iterations={iterations} "
+            f"save_sample_attempts={save_attempts} bash_calls={ctx.bash_calls} "
+            f"bash_log_entries={bash_attempts} saved_files=0"
+            + (f" | last model prose: {stopped[:300]!r}" if stopped else "")
         )
 
     test_loc = sum(f.loc_taken for f in ctx.saved_files if f.layer == "test")

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -119,6 +120,50 @@ def _validate_primary_language(value: Optional[str]) -> Optional[str]:
     return canonical
 
 
+def _log_clone_diagnostics(repo_name: str, clone_dest: Path) -> None:
+    """Log what actually landed on disk after clone — for investigating
+    repos that the agent reports as empty (0 LOC). Best-effort, never raises."""
+    try:
+        import subprocess
+        from collections import Counter
+        files = []
+        total_bytes = 0
+        ext = Counter()
+        for dp, dn, fs in os.walk(clone_dest):
+            if ".git" in dp.split(os.sep):
+                continue
+            for f in fs:
+                p = os.path.join(dp, f)
+                files.append(os.path.relpath(p, clone_dest))
+                try:
+                    total_bytes += os.path.getsize(p)
+                except OSError:
+                    pass
+                ext[os.path.splitext(f)[1].lower() or "<noext>"] += 1
+        # git HEAD / branch / shallow
+        def _git(*a):
+            try:
+                return subprocess.run(["git", "-C", str(clone_dest), *a],
+                                      capture_output=True, text=True, timeout=10).stdout.strip()
+            except Exception:
+                return "?"
+        head = _git("rev-parse", "--short", "HEAD")
+        branch = _git("rev-parse", "--abbrev-ref", "HEAD")
+        shallow = os.path.exists(os.path.join(clone_dest, ".git", "shallow"))
+        top_ext = ", ".join(f"{e}:{n}" for e, n in ext.most_common(8))
+        logger.info(
+            f"[{repo_name}] CLONE-DIAG: files={len(files)} "
+            f"size={total_bytes // 1024}KB branch={branch} head={head} "
+            f"shallow={shallow} | ext: {top_ext}"
+        )
+        if len(files) == 0:
+            logger.warning(f"[{repo_name}] CLONE-DIAG: WORKTREE EMPTY — clone produced no files")
+        else:
+            logger.info(f"[{repo_name}] CLONE-DIAG sample: {files[:15]}")
+    except Exception as e:
+        logger.warning(f"[{repo_name}] CLONE-DIAG failed: {e}")
+
+
 async def _get_commit_sha(repo_path: Path) -> str:
     try:
         proc = await asyncio.create_subprocess_exec(
@@ -174,6 +219,7 @@ async def _process_repo(
                 logger.info(f"[{repo_name}] dry-run: {file_count} files found")
                 return {"repo_url": url, "repo_name": repo_name, "folder_name": folder_name, "dry_run": True}
 
+            _log_clone_diagnostics(repo_name, clone_dest)
             stage = "agent"
             logger.info(f"[{repo_name}] starting agent ({settings.agent_model})...")
             result = await run_agent(
