@@ -154,3 +154,74 @@ def test_clone_env_accepts_new_host_keys(monkeypatch):
     cmd = _clone_env()["GIT_SSH_COMMAND"]
     assert "BatchMode=yes" in cmd
     assert "StrictHostKeyChecking=accept-new" in cmd
+
+
+# ---------------------------------------------------------------------------
+# checkout_latest_branch — move off an empty/README-only default branch
+# ---------------------------------------------------------------------------
+
+import os  # noqa: E402
+
+from repo_sampler.cloner import checkout_latest_branch  # noqa: E402
+
+
+def _git(cwd: Path, *args: str, date: str | None = None) -> None:
+    env = {**os.environ}
+    if date:
+        env["GIT_AUTHOR_DATE"] = date
+        env["GIT_COMMITTER_DATE"] = date
+    subprocess.run(
+        ["git", "-c", "user.email=t@t", "-c", "user.name=t", *args],
+        cwd=cwd, check=True, env=env,
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    )
+
+
+def test_checkout_latest_branch_moves_off_readme_only_default():
+    """Default branch has only a README (old); the real code lives on a feature
+    branch with a newer commit. After clone+checkout we must land on the code."""
+    with tempfile.TemporaryDirectory() as tmp:
+        src = Path(tmp) / "src-repo"
+        src.mkdir(parents=True)
+        _git(src, "init", "--quiet", "-b", "main")
+        # Default branch: README only, older commit.
+        (src / "README.md").write_text("# Just a readme\n")
+        _git(src, "add", ".")
+        _git(src, "commit", "--quiet", "-m", "readme", date="2020-01-01T00:00:00")
+        # Feature branch: real code, newer commit.
+        _git(src, "checkout", "--quiet", "-b", "feature")
+        (src / "engine.py").write_text("def run():\n    return 42\n")
+        _git(src, "add", ".")
+        _git(src, "commit", "--quiet", "-m", "code", date="2022-01-01T00:00:00")
+        # Leave the default branch checked out, as a real remote would serve it.
+        _git(src, "checkout", "--quiet", "main")
+
+        dest = Path(tmp) / "clones" / "dest"
+
+        async def _run():
+            await clone_repo(str(src), dest)
+            # Fresh clone is on the default (README-only) branch.
+            assert (dest / "README.md").exists()
+            assert not (dest / "engine.py").exists()
+            selected = await checkout_latest_branch(dest)
+            return selected
+
+        selected = asyncio.run(_run())
+        assert selected == "refs/remotes/origin/feature"
+        assert (dest / "engine.py").exists()        # switched to the code branch
+
+
+def test_checkout_latest_branch_single_branch_is_stable():
+    """A repo with only the default branch must still resolve and stay valid."""
+    with tempfile.TemporaryDirectory() as tmp:
+        src = Path(tmp) / "src-repo"
+        _make_git_repo(src)
+        dest = Path(tmp) / "clones" / "dest"
+
+        async def _run():
+            await clone_repo(str(src), dest)
+            return await checkout_latest_branch(dest)
+
+        selected = asyncio.run(_run())
+        assert selected is not None
+        assert (dest / "f.py").exists()
