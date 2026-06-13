@@ -15,7 +15,7 @@ from rich.table import Table
 
 from .agent import AgentResult, AuthError, run_agent, url_to_folder_name
 from .anonymizer import run_anonymizer
-from .cloner import CloneError, cleanup_repo, clone_repo, rewrite_url
+from .cloner import CloneError, checkout_latest_branch, cleanup_repo, clone_repo, rewrite_url
 from .config import Settings
 from .languages import canonicalize
 from .writer import append_jsonl_with_meta, remove_record, write_parquet
@@ -230,6 +230,9 @@ async def _process_repo(
                 clone_dest,
                 timeout=settings.clone_timeout,
             )
+            selected_branch = await checkout_latest_branch(clone_dest)
+            if selected_branch:
+                logger.info(f"[{repo_name}] sampling latest-commit branch: {selected_branch}")
 
             if dry_run:
                 proc = await asyncio.create_subprocess_exec(
@@ -510,6 +513,9 @@ def show_sample(
                     clone_dest,
                     timeout=settings.clone_timeout,
                 )
+                selected_branch = await checkout_latest_branch(clone_dest)
+                if selected_branch:
+                    logger.info(f"[{repo_name}] sampling latest-commit branch: {selected_branch}")
                 result = await run_agent(
                     repo_path=clone_dest,
                     repo_url=repo_url,
