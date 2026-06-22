@@ -27,6 +27,17 @@ _lang_from_path = lang_from_path
 _count_loc_lines = count_code_lines
 
 # ---------------------------------------------------------------------------
+# Layer value semantics
+# ---------------------------------------------------------------------------
+# The `layer` an agent tags each saved file with also encodes how much
+# substantive, hand-written logic the file carries. We track the share of the
+# sample that lands in the high-signal layers and steer the agent toward it,
+# so the budget is spent on real business/domain logic and algorithms rather
+# than boilerplate and generated filler.
+SUBSTANCE_LAYERS = {"business", "algorithm", "data", "api"}
+LOW_VALUE_LAYERS = {"boilerplate", "infra", "autogen"}
+
+# ---------------------------------------------------------------------------
 # Data structures
 # ---------------------------------------------------------------------------
 
@@ -81,14 +92,23 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "save_sample",
-            "description": "Copy a file (or line range) verbatim from disk to deliverable/samples/. Returns {saved, loc, running_total_loc}.",
+            "description": "Copy a file (or line range) verbatim from disk to deliverable/samples/. Returns {saved, loc, running_total_loc, logic_share}.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "path": {"type": "string", "description": "Relative path from repo root."},
                     "layer": {
                         "type": "string",
-                        "enum": ["business", "data", "api", "util", "test", "infra", "autogen"],
+                        "description": (
+                            "Tag the file honestly by what it mainly contains. "
+                            "High-signal (favour these): business=domain rules/workflows/state machines; "
+                            "algorithm=non-trivial algorithms/data processing; data=substantive queries/data logic; "
+                            "api=API handlers with real logic. "
+                            "Neutral: util, test. "
+                            "Low-signal (sample sparingly): boilerplate=DTO/ORM scaffolding, DI/config wiring, "
+                            "thin wrappers, presentation/markup; infra=build/ops; autogen=generated."
+                        ),
+                        "enum": ["business", "algorithm", "data", "api", "util", "test", "infra", "boilerplate", "autogen"],
                     },
                     "start_line": {"type": "integer", "description": "1-indexed. Omit for full file."},
                     "end_line":   {"type": "integer", "description": "Inclusive. Omit for full file."},
@@ -176,22 +196,39 @@ Hard rules:
 
 ## Goal
 
-Collect ~{settings.target_loc} LOC (±{settings.loc_tolerance}) of code samples that are representative of the codebase's typical quality — not cherry-picked best files. Include messy and boring parts proportionally.
+Collect ~{settings.target_loc} LOC (±{settings.loc_tolerance}) of code samples that capture the repository's substantive, hand-written engineering — its real business and domain logic, non-trivial algorithms, and genuinely meaningful code. Aim for a high signal-to-noise sample: maximise the share of files dense with real logic, and keep boilerplate and machine-generated filler to a small, representative minimum.
 
 HARD CAP: {settings.max_total_loc} LOC total. save_sample will reject any file that would push the total above it — do not try; once you are near {settings.target_loc}, stop saving and finish. Overshooting is as wrong as undershooting.
 
+## Prioritise substance (favour these)
+
+Spend most of the budget on files where most lines do real work. After every tool call you are shown your **logic share** — the % of saved LOC tagged business/algorithm/data/api. Aim for at least {int(settings.logic_share_min * 100)}% in these high-signal layers:
+- **business** — domain rules, workflows, state machines, lifecycle/status transitions, calculations, domain formulas, validation with real branching.
+- **algorithm** — non-trivial algorithms and data processing: parsing, scheduling/optimisation, transformations, concurrency, protocol handling, custom data structures.
+- **data** — substantive queries and data-access logic (complex queries, aggregations), not plain ORM field declarations.
+- **api** — the logic inside API handlers (orchestration, rules, error handling), not the routing skeleton.
+
+Between two files of similar size, prefer the one with more real control flow and edge-case handling over the one that is mostly declarations.
+
+## Sample sparingly — low signal
+
+These carry little value. Include only a little, only when genuinely representative; keep the combined boilerplate/infra/autogen share under ~{int(settings.boilerplate_share_max * 100)}%:
+- **boilerplate** — DTOs/models that are mostly getters/setters/annotations, ORM entity scaffolding, dependency-injection wiring, config modules, constant tables, thin pass-through controllers/repositories that only delegate, one-line CRUD endpoints, and presentation/UI (view templates, styling, component markup, layout). Favour the logic behind the UI over the UI itself.
+- **infra** — build/CI/deploy scripts.
+- Framework/CMS glue — files that are mostly calls into a framework/CMS with little original logic of their own.
+
 ## Select files
 
-- Cover every significant module/layer: business logic, data access, API handlers, tests, utilities.
+- Cover the significant modules, but weight coverage toward where the real logic lives.
 - Prefer medium-size files (100–500 LOC). Whole files preferred; partial extracts only for >800 LOC files.
-- Tests: {int(settings.test_share_min * 100)}–{int(settings.test_share_max * 100)}% of total LOC.
-- Stratify by module, layer, age (git log), and author when possible.
-- **Quality over quantity of files**: do NOT fill the budget with __init__.py, thin wrappers, or files under 30 LOC just to reach the LOC target. However, under-sampling is acceptable ONLY when the repository genuinely contains less than ~{settings.target_loc} LOC of substantive code. If the repo clearly has at least {settings.target_loc} LOC of real source files, you MUST keep saving until you reach at least {settings.target_loc - settings.loc_tolerance} LOC — ordinary, boring production code counts; it does not need to be impressive to be included.
+- Tests: {int(settings.test_share_min * 100)}–{int(settings.test_share_max * 100)}% of total LOC (tag them `test`).
+- Stratify by module, layer, and age (git log) when possible.
+- **Quality over quantity**: do NOT fill the budget with __init__.py, thin wrappers, boilerplate, or files under 30 LOC just to reach the LOC target. Under-sampling is acceptable ONLY when the repository genuinely lacks ~{settings.target_loc} LOC of substantive code. If it clearly has enough real source, keep saving substantive files until at least {settings.target_loc - settings.loc_tolerance} LOC — ordinary production logic counts even when unremarkable, but padding with boilerplate to hit the number does not.
 {language_section}
-## Exclude
+## Exclude entirely
 
 - Auto-generated files: migrations, protobuf/OpenAPI stubs, ORM auto-gen, any "DO NOT EDIT" files.
-- Vendored code, lock files, binary assets, pure-constant or fixture files.
+- Vendored/third-party code, lock files, minified bundles, binary assets, pure-constant or fixture files.
 - Files containing secrets, credentials, or PII — skip entirely.
 
 ## repo_summary.md format (four sections, ~1 page)
@@ -215,9 +252,9 @@ ALL text you write (summary, notes, any output) must be fully anonymous:
 ## Other rules
 
 - No transformations on files ever. Files must be identical to a git checkout.
-- Honesty over flattery — messy parts included proportionally.
-- Monorepo → sample from each major project.
-- When in doubt, prefer the boring/typical file over the impressive one.
+- Real over polished — include ordinary, even messy, production logic; just make sure it IS logic, not boilerplate.
+- Monorepo → sample from each major project, focusing on its logic-bearing parts.
+- When two candidates are equally representative, prefer the one carrying more substantive logic.
 """
 
 
@@ -243,6 +280,11 @@ def _primary_loc(ctx: _ToolCtx) -> int:
     if not ctx.primary_language:
         return 0
     return sum(f.loc_taken for f in ctx.saved_files if f.language == ctx.primary_language)
+
+
+def _substance_loc(ctx: _ToolCtx) -> int:
+    """LOC saved into the high-signal layers (real business logic & algorithms)."""
+    return sum(f.loc_taken for f in ctx.saved_files if f.layer in SUBSTANCE_LAYERS)
 
 
 async def _exec_bash(ctx: _ToolCtx, command: str) -> str:
@@ -274,6 +316,12 @@ async def _exec_bash(ctx: _ToolCtx, command: str) -> str:
     saved_loc = sum(f.loc_taken for f in ctx.saved_files)
     remaining = max(0, ctx.settings.target_loc - saved_loc)
     progress = f"[LOC:{saved_loc}/{ctx.settings.target_loc} files:{len(ctx.saved_files)} need:{remaining}"
+    if saved_loc:
+        # floor, not round: 59.6% must not read as a passing-looking 60%
+        logic_pct = int(_substance_loc(ctx) / saved_loc * 100)
+        progress += (
+            f" | logic: {logic_pct}% — goal {int(ctx.settings.logic_share_min * 100)}%"
+        )
     if ctx.primary_language:
         ploc = _primary_loc(ctx)
         # floor, not round: 19.6% must never display as a passing-looking 20%
@@ -389,6 +437,9 @@ def _exec_save_sample(
 
     result = {"saved": True, "loc": loc, "running_total_loc": running_total,
               "language": language or "unknown"}
+    if running_total:
+        # share of the sample so far that is substantive logic (floor to 2dp)
+        result["logic_share"] = int(_substance_loc(ctx) / running_total * 100) / 100
     if ctx.primary_language and running_total:
         # floor to 2dp: 0.196 must not display as a passing-looking 0.2
         result["primary_share"] = int(_primary_loc(ctx) / running_total * 100) / 100
@@ -742,6 +793,7 @@ async def run_agent(
     iterations = 0
     last_save_iteration = -1   # track when agent last called save_sample
     last_primary_nudge = -10   # rate-limit the language-requirement nudge
+    last_logic_nudge = -10     # rate-limit the logic-share nudge
 
     for iteration in range(settings.agent_max_iterations):
         iterations = iteration + 1
@@ -874,6 +926,27 @@ async def run_agent(
                 f"⚠️ Only {settings.agent_max_iterations - iteration} iterations left and you "
                 f"have {saved_loc}/{settings.target_loc} LOC. Stop exploring — save your best "
                 f"remaining candidate files NOW, then write_summary and finish.{lang_caveat}"
+            )
+            messages.append({"role": "user", "content": nudge})
+            agent_log.append({"turn": iteration + 1, "nudge": nudge})
+        elif (
+            saved_loc >= settings.target_loc // 2
+            and saved_loc < settings.target_loc + settings.loc_tolerance
+            and _substance_loc(ctx) < settings.logic_share_min * saved_loc
+            and iteration - last_logic_nudge >= 4
+        ):
+            # Lowest-priority steer: only when not urgent/over-target/stalled and
+            # the language goal is not itself unmet — push the remaining budget
+            # toward substantive logic instead of boilerplate.
+            last_logic_nudge = iteration
+            sub = _substance_loc(ctx)
+            pct = int(sub / saved_loc * 100) if saved_loc else 0
+            nudge = (
+                f"⚠️ LOGIC SHARE LOW: only {pct}% of your sample is substantive logic "
+                f"(business/algorithm/data/api) — aim for at least "
+                f"{int(settings.logic_share_min * 100)}%. For your remaining saves, prefer files "
+                f"with real domain logic and algorithms; avoid boilerplate (DTO/ORM scaffolding, "
+                f"DI/config wiring, thin wrappers, presentation/UI)."
             )
             messages.append({"role": "user", "content": nudge})
             agent_log.append({"turn": iteration + 1, "nudge": nudge})

@@ -19,6 +19,17 @@ class Settings(BaseSettings):
     test_share_min: float = 0.1
     test_share_max: float = 0.2
 
+    # Sample quality: bias the budget toward substantive, hand-written logic
+    # (business/domain rules, algorithms, data processing, real API logic) and
+    # away from boilerplate (DTO/ORM scaffolding, DI/config wiring, thin
+    # wrappers, presentation/markup, generated filler). The agent sees its
+    # running "logic share" after every tool call and is steered toward this
+    # goal; it is a soft target (prompt + nudge), never a hard rejection.
+    logic_share_min: float = 0.6
+    # Soft ceiling on the combined share of low-signal layers
+    # (boilerplate/infra/autogen). Surfaced in the prompt as guidance.
+    boilerplate_share_max: float = 0.2
+
     # Language coverage: the sample must contain at least this share of LOC
     # in the repo's primary language (the plurality language by code lines,
     # scc-compatible naming). ~1000 LOC of a 5000-LOC sample — clearly "well
