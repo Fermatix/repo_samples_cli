@@ -690,3 +690,109 @@ async def test_non_json_response_is_retried_then_recovers():
         assert state["served_bad"] is True       # the bad body was actually served
         assert result.total_loc == 3              # run recovered and saved the file
         assert len(result.files) == 1
+
+
+# ---------------------------------------------------------------------------
+# Logic-density (sample quality) steering
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_prompt_prioritises_substance_over_boilerplate():
+    """System prompt steers toward substantive logic and away from boilerplate."""
+    with tempfile.TemporaryDirectory() as tmp:
+        repo = Path(tmp) / "repo"
+        out = Path(tmp) / "out"
+        (repo / "src").mkdir(parents=True)
+        (repo / "src" / "app.py").write_text("x = 1\n" * 50)
+
+        settings = _make_settings(lang_scan_use_scc=False)
+        captured: list[dict] = []
+
+        def handler(request):
+            captured.append(json.loads(request.content))
+            return httpx.Response(200, json=_assistant_stop())
+
+        with respx.mock:
+            respx.post("https://openrouter.ai/api/v1/chat/completions").mock(side_effect=handler)
+            async with httpx.AsyncClient() as client:
+                await run_agent(
+                    repo_path=repo, repo_url="https://github.com/owner/repo",
+                    output_dir=out, settings=settings, client=client,
+                )
+
+        sys_prompt = captured[0]["messages"][0]["content"]
+        assert "## Prioritise substance" in sys_prompt
+        assert "Sample sparingly" in sys_prompt
+        assert "logic share" in sys_prompt
+        # default goal 60% surfaced
+        assert "at least 60%" in sys_prompt
+        # the old "representative typical / include boring proportionally" framing is gone
+        assert "representative of the codebase's typical quality" not in sys_prompt
+
+
+@pytest.mark.asyncio
+async def test_logic_share_in_save_result_and_bash_progress():
+    """save_sample returns logic_share; bash progress line shows the logic %."""
+    with tempfile.TemporaryDirectory() as tmp:
+        repo = Path(tmp) / "repo"
+        out = Path(tmp) / "out"
+        repo.mkdir()
+        (repo / "engine.py").write_text("def f(x):\n    return x + 1\n" * 10)  # 20 LOC
+
+        settings = _make_settings(lang_scan_use_scc=False)
+        responses = iter([
+            _assistant_with_tools([_tool_call("c1", "save_sample", {"path": "engine.py", "layer": "business"})]),
+            _assistant_with_tools([_tool_call("c2", "bash", {"command": "ls"})]),
+            _assistant_with_tools([_summary_call("c3")]),
+            _assistant_with_tools([_tool_call("c4", "finish", {"message": "d", "total_loc": 20, "file_count": 1})]),
+        ])
+
+        with respx.mock:
+            respx.post("https://openrouter.ai/api/v1/chat/completions").mock(
+                side_effect=lambda req: httpx.Response(200, json=next(responses))
+            )
+            async with httpx.AsyncClient() as client:
+                result = await run_agent(
+                    repo_path=repo, repo_url="https://github.com/owner/repo",
+                    output_dir=out, settings=settings, client=client,
+                )
+
+        log = json.loads((out / result.folder_name / "agent_log.json").read_text())
+        save_previews = [e["result_preview"] for e in log["agent_log"] if e.get("tool") == "save_sample"]
+        assert any('"logic_share"' in p for p in save_previews)
+        bash_previews = [e["result_preview"] for e in log["agent_log"] if e.get("tool") == "bash"]
+        # all saved LOC is in a high-signal layer -> 100%
+        assert any("logic: 100%" in p for p in bash_previews)
+
+
+@pytest.mark.asyncio
+async def test_logic_share_nudge_fires_on_boilerplate_heavy_sample():
+    """A sample made entirely of low-signal layers triggers the logic-share nudge."""
+    with tempfile.TemporaryDirectory() as tmp:
+        repo = Path(tmp) / "repo"
+        out = Path(tmp) / "out"
+        repo.mkdir()
+        (repo / "models.py").write_text("x = 1\n" * 21)  # Python, 21 LOC -> primary share 100%
+
+        settings = _make_settings(
+            lang_scan_use_scc=False, target_loc=40, loc_tolerance=10, max_total_loc=200,
+        )
+        responses = iter([
+            _assistant_with_tools([_tool_call("c1", "save_sample", {"path": "models.py", "layer": "boilerplate"})]),
+            _assistant_with_tools([_summary_call("c2")]),
+            _assistant_with_tools([_tool_call("c3", "finish", {"message": "d", "total_loc": 21, "file_count": 1})]),
+        ])
+
+        with respx.mock:
+            respx.post("https://openrouter.ai/api/v1/chat/completions").mock(
+                side_effect=lambda req: httpx.Response(200, json=next(responses))
+            )
+            async with httpx.AsyncClient() as client:
+                result = await run_agent(
+                    repo_path=repo, repo_url="https://github.com/owner/repo",
+                    output_dir=out, settings=settings, client=client,
+                )
+
+        log = json.loads((out / result.folder_name / "agent_log.json").read_text())
+        nudges = [e["nudge"] for e in log["agent_log"] if "nudge" in e]
+        assert any("LOGIC SHARE LOW" in n for n in nudges)
