@@ -860,3 +860,34 @@ async def test_main_language_absent_when_no_code_saved():
         assert result.main_language == ""
         summary = (out / result.folder_name / "repo_summary.md").read_text()
         assert "**Main language:**" not in summary
+
+
+@pytest.mark.asyncio
+async def test_main_language_set_even_without_write_summary():
+    """Agent saves code but never calls write_summary -> the fallback path still
+    records main_language in stats/result (regression: it was logged empty when
+    written before the fallback summary)."""
+    with tempfile.TemporaryDirectory() as tmp:
+        repo = Path(tmp) / "repo"
+        out = Path(tmp) / "out"
+        repo.mkdir()
+        (repo / "svc.py").write_text("def f(x):\n    return x * 2\n" * 20)
+        settings = _make_settings(lang_scan_use_scc=False)
+        responses = iter([
+            _assistant_with_tools([_tool_call("c1", "save_sample", {"path": "svc.py", "layer": "business"})]),
+            _assistant_stop(),  # no tool calls -> loop breaks -> fallback summary
+        ])
+        with respx.mock:
+            respx.post("https://openrouter.ai/api/v1/chat/completions").mock(
+                side_effect=lambda req: httpx.Response(200, json=next(responses))
+            )
+            async with httpx.AsyncClient() as client:
+                result = await run_agent(
+                    repo_path=repo, repo_url="https://github.com/owner/repo",
+                    output_dir=out, settings=settings, client=client,
+                )
+        assert result.main_language == "Python"
+        log = json.loads((out / result.folder_name / "agent_log.json").read_text())
+        assert log["stats"]["main_language"] == "Python"
+        summary = (out / result.folder_name / "repo_summary.md").read_text()
+        assert summary.startswith("**Main language:** Python")

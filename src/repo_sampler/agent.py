@@ -1087,6 +1087,10 @@ async def run_agent(
         if ctx.finished:
             break
 
+    # Resolve the sample's main language before logging, so the stat is correct
+    # even when the agent never called write_summary (fallback path below).
+    ctx.main_language = _dominant_code_language(ctx)
+
     # Write agent log for debugging
     _write_agent_log(deliverable_dir, agent_log, ctx)
 
