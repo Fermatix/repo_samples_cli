@@ -104,6 +104,34 @@ def test_result_failure_no_primary_language_known():
     assert _result_failure(result, settings) is None
 
 
+def test_typescript_satisfies_javascript_primary():
+    """JS/TS are one bucket: a TS-only sample meets a forced JavaScript primary."""
+    settings = Settings(openrouter_api_key="k", primary_share_min=0.20)
+    result = _result_with(
+        [("a.php", 3500, "PHP"), ("b.ts", 1500, "TypeScript")], primary="JavaScript"
+    )
+    assert _result_failure(result, settings) is None
+
+
+def test_javascript_satisfies_typescript_primary():
+    """And the reverse: JS files meet a forced TypeScript primary."""
+    settings = Settings(openrouter_api_key="k", primary_share_min=0.20)
+    result = _result_with(
+        [("a.php", 3500, "PHP"), ("b.js", 1500, "JavaScript")], primary="TypeScript"
+    )
+    assert _result_failure(result, settings) is None
+
+
+def test_unrelated_language_still_fails_primary():
+    """Bucketing is JS/TS only — Python does not satisfy a JavaScript primary."""
+    settings = Settings(openrouter_api_key="k", primary_share_min=0.20)
+    result = _result_with(
+        [("a.py", 4500, "Python"), ("b.js", 100, "JavaScript")], primary="JavaScript"
+    )
+    stage, _ = _result_failure(result, settings)
+    assert stage == "agent_no_primary_lang"
+
+
 def test_rejected_deliverable_dir_is_deleted(tmp_path, monkeypatch):
     """A sample that fails primary-language validation must not leave a
     populated deliverable folder behind — the anonymize step would ship it."""

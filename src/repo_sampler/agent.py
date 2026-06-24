@@ -16,10 +16,13 @@ from .languages import (
     COMMENT_PREFIXES,  # noqa: F401  (re-export for legacy imports)
     compute_language_stats,
     count_code_lines,
-    extensions_for,
+    extensions_for,  # noqa: F401  (re-export for legacy imports)
     format_distribution,
     lang_from_path,
     pick_code_primary,
+    primary_display,
+    primary_extensions,
+    same_language_bucket,
 )
 
 # Legacy aliases — older code and tests import these names from agent.
@@ -279,7 +282,11 @@ class _ToolCtx:
 def _primary_loc(ctx: _ToolCtx) -> int:
     if not ctx.primary_language:
         return 0
-    return sum(f.loc_taken for f in ctx.saved_files if f.language == ctx.primary_language)
+    # JS and TS count as one bucket — see languages.same_language_bucket.
+    return sum(
+        f.loc_taken for f in ctx.saved_files
+        if same_language_bucket(f.language, ctx.primary_language)
+    )
 
 
 def _substance_loc(ctx: _ToolCtx) -> int:
@@ -719,7 +726,8 @@ async def run_agent(
 
     if primary:
         share_min_pct = int(settings.primary_share_min * 100)
-        exts = ", ".join(extensions_for(primary)) or "n/a"
+        pdisp = primary_display(primary)
+        exts = ", ".join(primary_extensions(primary)) or "n/a"
         if not primary_forced and stats.primary and stats.primary != primary:
             from .languages import NON_CODE_LANGS
             if stats.primary in NON_CODE_LANGS:
@@ -743,16 +751,16 @@ async def run_agent(
             plurality_note = ""
         if primary_forced:
             requirement = (
-                f"PRIMARY LANGUAGE: {primary} (file extensions: {exts}).\n"
+                f"PRIMARY LANGUAGE: {pdisp} (file extensions: {exts}).\n"
                 f"HARD REQUIREMENT: at least {share_min_pct}% of the LOC you save must "
-                f"be {primary} files. Track this in the LOC progress shown after each "
+                f"be {pdisp} files. Track this in the LOC progress shown after each "
                 f"tool call."
             )
         else:
             requirement = (
-                f"PRIMARY CODE LANGUAGE: {primary} (file extensions: {exts}).\n"
+                f"PRIMARY CODE LANGUAGE: {pdisp} (file extensions: {exts}).\n"
                 f"{plurality_note}"
-                f"Aim for at least {share_min_pct}% of saved LOC in {primary}; prefer "
+                f"Aim for at least {share_min_pct}% of saved LOC in {pdisp}; prefer "
                 f"it over markup/style/data files. Track this in the LOC progress "
                 f"shown after each tool call."
             )
@@ -850,7 +858,7 @@ async def run_agent(
                 # and let the run finish normally.
                 last_primary_nudge = settings.agent_max_iterations
             else:
-                exts = ", ".join(extensions_for(ctx.primary_language)) or "n/a"
+                exts = ", ".join(primary_extensions(ctx.primary_language)) or "n/a"
                 headroom = (
                     f" The {settings.max_total_loc} LOC hard cap still has "
                     f"{cap_headroom} LOC of room even though you are at target."

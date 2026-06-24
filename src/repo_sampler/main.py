@@ -17,7 +17,7 @@ from .agent import AgentResult, AuthError, run_agent, url_to_folder_name
 from .anonymizer import run_anonymizer
 from .cloner import CloneError, checkout_latest_branch, cleanup_repo, clone_repo, rewrite_url
 from .config import Settings
-from .languages import canonicalize
+from .languages import canonicalize, same_language_bucket
 from .writer import append_jsonl_with_meta, remove_record, write_parquet
 
 app = typer.Typer(help="CLI tool for extracting representative code samples from git repositories.")
@@ -104,8 +104,10 @@ def _write_error(path: Path, url: str, stage: str, error: str) -> None:
 def _primary_share(result: AgentResult) -> float:
     if not result.total_loc or not result.primary_language:
         return 0.0
+    # JS and TS count as one bucket — see languages.same_language_bucket.
     ploc = sum(
-        f.loc_taken for f in result.files if f.language == result.primary_language
+        f.loc_taken for f in result.files
+        if same_language_bucket(f.language, result.primary_language)
     )
     return ploc / result.total_loc
 

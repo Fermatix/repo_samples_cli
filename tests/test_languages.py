@@ -255,3 +255,26 @@ def test_xaml_is_markup_not_focus():
     stats = LanguageStats(counts={"XAML": 600, "C#": 400},
                           total=1000, primary="XAML", source="walk")
     assert pick_code_primary(stats) == "C#"
+
+
+def test_same_language_bucket_js_ts():
+    """JavaScript and TypeScript count as one ecosystem bucket; others don't."""
+    sb = languages.same_language_bucket
+    assert sb("JavaScript", "TypeScript")
+    assert sb("TypeScript", "JavaScript")
+    assert sb("JavaScript", "JavaScript")
+    assert sb("Python", "Python")
+    assert not sb("JavaScript", "Python")
+    assert not sb("TypeScript", "Java")
+    assert not sb("", "JavaScript")
+    assert not sb("JavaScript", None)
+
+
+def test_primary_extensions_and_display_span_js_ts():
+    exts = languages.primary_extensions("JavaScript")
+    assert ".js" in exts and ".ts" in exts and ".tsx" in exts
+    assert languages.primary_display("JavaScript") == "JavaScript/TypeScript"
+    assert languages.primary_display("TypeScript") == "JavaScript/TypeScript"
+    # non-bucket languages are unchanged
+    assert languages.primary_display("Python") == "Python"
+    assert ".ts" not in languages.primary_extensions("Python")

@@ -211,6 +211,26 @@ def is_code_language(name: str) -> bool:
     return bool(name) and name not in NON_CODE_LANGS
 
 
+# JavaScript and TypeScript are one ecosystem: TS is a typed superset of JS that
+# transpiles to JS, with the same tooling and frameworks. For primary-language
+# coverage they count as a single bucket, so a TS-heavy repo whose detected/forced
+# primary is "JavaScript" (or the reverse) is not rejected for "missing" the
+# labelled language — its TS (or JS) files satisfy the requirement.
+JS_TS_BUCKET = frozenset({"JavaScript", "TypeScript"})
+
+
+def same_language_bucket(a: str | None, b: str | None) -> bool:
+    """True when two scc language names count as the same primary language.
+
+    Exact match, or both inside the JavaScript/TypeScript ecosystem bucket.
+    """
+    if not a or not b:
+        return False
+    if a == b:
+        return True
+    return a in JS_TS_BUCKET and b in JS_TS_BUCKET
+
+
 def pick_code_primary(stats: "LanguageStats") -> str | None:
     """The largest trackable REAL-CODE language to focus sampling on.
 
@@ -242,6 +262,22 @@ def extensions_for(language: str) -> list[str]:
     exts += [end for end, lang in _NAME_ENDSWITH_TO_LANG if lang == language]
     exts += [fn for fn, lang in _FILENAME_TO_LANG.items() if lang == language]
     return sorted(exts)
+
+
+def primary_display(language: str) -> str:
+    """Human label for a primary language; spans the JS/TS bucket."""
+    return "JavaScript/TypeScript" if language in JS_TS_BUCKET else language
+
+
+def primary_extensions(language: str) -> list[str]:
+    """Extensions to advertise for a primary language; spans the JS/TS bucket
+    so the agent knows that either JS or TS files satisfy the requirement."""
+    if language in JS_TS_BUCKET:
+        out: list[str] = []
+        for lang in ("JavaScript", "TypeScript"):
+            out += extensions_for(lang)
+        return sorted(set(out))
+    return extensions_for(language)
 
 
 @dataclass
