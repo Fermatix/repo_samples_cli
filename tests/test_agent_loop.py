@@ -796,3 +796,98 @@ async def test_logic_share_nudge_fires_on_boilerplate_heavy_sample():
         log = json.loads((out / result.folder_name / "agent_log.json").read_text())
         nudges = [e["nudge"] for e in log["agent_log"] if "nudge" in e]
         assert any("LOGIC SHARE LOW" in n for n in nudges)
+
+
+@pytest.mark.asyncio
+async def test_main_language_written_to_summary():
+    """repo_summary.md is prefixed with the dominant CODE language of the saved
+    sample (TypeScript here — more TS LOC than JS; CSS ignored as non-code)."""
+    with tempfile.TemporaryDirectory() as tmp:
+        repo = Path(tmp) / "repo"
+        out = Path(tmp) / "out"
+        repo.mkdir()
+        (repo / "a.ts").write_text("export const x = 1;\n" * 40)   # TypeScript (dominant)
+        (repo / "b.js").write_text("const y = 1;\n" * 10)          # JavaScript
+        (repo / "s.css").write_text("a {}\n" * 50)                 # non-code, must be ignored
+
+        settings = _make_settings(lang_scan_use_scc=False)
+        responses = iter([
+            _assistant_with_tools([_tool_call("c1", "save_sample", {"path": "a.ts", "layer": "business"})]),
+            _assistant_with_tools([_tool_call("c2", "save_sample", {"path": "b.js", "layer": "business"})]),
+            _assistant_with_tools([_summary_call("c3")]),
+            _assistant_with_tools([_tool_call("c4", "finish", {"message": "d", "total_loc": 50, "file_count": 2})]),
+        ])
+        with respx.mock:
+            respx.post("https://openrouter.ai/api/v1/chat/completions").mock(
+                side_effect=lambda req: httpx.Response(200, json=next(responses))
+            )
+            async with httpx.AsyncClient() as client:
+                result = await run_agent(
+                    repo_path=repo, repo_url="https://github.com/owner/repo",
+                    output_dir=out, settings=settings, client=client,
+                )
+
+        assert result.main_language == "TypeScript"
+        summary = (out / result.folder_name / "repo_summary.md").read_text()
+        assert summary.startswith("**Main language:** TypeScript")
+        log = json.loads((out / result.folder_name / "agent_log.json").read_text())
+        assert log["stats"]["main_language"] == "TypeScript"
+
+
+@pytest.mark.asyncio
+async def test_main_language_absent_when_no_code_saved():
+    """No code files saved -> no main-language line is prepended."""
+    with tempfile.TemporaryDirectory() as tmp:
+        repo = Path(tmp) / "repo"
+        out = Path(tmp) / "out"
+        repo.mkdir()
+        (repo / "data.json").write_text('{"k": 1}\n' * 20)
+        settings = _make_settings(lang_scan_use_scc=False)
+        responses = iter([
+            _assistant_with_tools([_tool_call("c1", "save_sample", {"path": "data.json", "layer": "data"})]),
+            _assistant_with_tools([_summary_call("c2")]),
+            _assistant_with_tools([_tool_call("c3", "finish", {"message": "d", "total_loc": 20, "file_count": 1})]),
+        ])
+        with respx.mock:
+            respx.post("https://openrouter.ai/api/v1/chat/completions").mock(
+                side_effect=lambda req: httpx.Response(200, json=next(responses))
+            )
+            async with httpx.AsyncClient() as client:
+                result = await run_agent(
+                    repo_path=repo, repo_url="https://github.com/owner/repo",
+                    output_dir=out, settings=settings, client=client,
+                )
+        assert result.main_language == ""
+        summary = (out / result.folder_name / "repo_summary.md").read_text()
+        assert "**Main language:**" not in summary
+
+
+@pytest.mark.asyncio
+async def test_main_language_set_even_without_write_summary():
+    """Agent saves code but never calls write_summary -> the fallback path still
+    records main_language in stats/result (regression: it was logged empty when
+    written before the fallback summary)."""
+    with tempfile.TemporaryDirectory() as tmp:
+        repo = Path(tmp) / "repo"
+        out = Path(tmp) / "out"
+        repo.mkdir()
+        (repo / "svc.py").write_text("def f(x):\n    return x * 2\n" * 20)
+        settings = _make_settings(lang_scan_use_scc=False)
+        responses = iter([
+            _assistant_with_tools([_tool_call("c1", "save_sample", {"path": "svc.py", "layer": "business"})]),
+            _assistant_stop(),  # no tool calls -> loop breaks -> fallback summary
+        ])
+        with respx.mock:
+            respx.post("https://openrouter.ai/api/v1/chat/completions").mock(
+                side_effect=lambda req: httpx.Response(200, json=next(responses))
+            )
+            async with httpx.AsyncClient() as client:
+                result = await run_agent(
+                    repo_path=repo, repo_url="https://github.com/owner/repo",
+                    output_dir=out, settings=settings, client=client,
+                )
+        assert result.main_language == "Python"
+        log = json.loads((out / result.folder_name / "agent_log.json").read_text())
+        assert log["stats"]["main_language"] == "Python"
+        summary = (out / result.folder_name / "repo_summary.md").read_text()
+        assert summary.startswith("**Main language:** Python")

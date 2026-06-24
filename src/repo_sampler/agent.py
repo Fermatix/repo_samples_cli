@@ -18,6 +18,7 @@ from .languages import (
     count_code_lines,
     extensions_for,
     format_distribution,
+    is_code_language,
     lang_from_path,
     pick_code_primary,
 )
@@ -62,6 +63,7 @@ class AgentResult:
     bash_calls: int = 0
     summary_md: str = ""
     primary_language: str = ""                 # enforced language ("" = none)
+    main_language: str = ""                     # dominant CODE language of the saved sample
     repo_lang_distribution: dict[str, float] = field(default_factory=dict)
     lang_stats_source: str = ""                # "scc" | "walk" | "empty"
     primary_forced: bool = False               # True when set via override
@@ -274,12 +276,30 @@ class _ToolCtx:
     bash_calls: int = 0
     primary_language: str | None = None
     primary_hard: bool = False   # True only with --primary-language override
+    main_language: str = ""      # dominant CODE language of the saved sample
 
 
 def _primary_loc(ctx: _ToolCtx) -> int:
     if not ctx.primary_language:
         return 0
     return sum(f.loc_taken for f in ctx.saved_files if f.language == ctx.primary_language)
+
+
+def _dominant_code_language(ctx: _ToolCtx) -> str:
+    """The CODE language with the most saved LOC — the sample's main language.
+
+    Derived from the files actually saved (hand-written, agent-curated, with
+    generated/vendored files already excluded at save time), so it reflects the
+    real primary language even when repo-wide metadata is skewed by generated or
+    bundled code. Markup/style/data languages are ignored. "" if none.
+    """
+    by_lang: dict[str, int] = {}
+    for f in ctx.saved_files:
+        if f.language and is_code_language(f.language):
+            by_lang[f.language] = by_lang.get(f.language, 0) + f.loc_taken
+    if not by_lang:
+        return ""
+    return max(by_lang, key=lambda k: (by_lang[k], k))
 
 
 def _substance_loc(ctx: _ToolCtx) -> int:
@@ -447,6 +467,14 @@ def _exec_save_sample(
 
 
 def _exec_write_summary(ctx: _ToolCtx, content: str) -> dict:
+    # Prepend the deterministically-computed main language so downstream language
+    # identification reads the sample's real dominant code language (not whatever
+    # the LLM wrote, and not repo metadata skewed by generated code). Guarded
+    # against double-prepend on re-write.
+    main = _dominant_code_language(ctx)
+    ctx.main_language = main
+    if main and not content.lstrip().startswith("**Main language:**"):
+        content = f"**Main language:** {main}\n\n{content}"
     dest = ctx.deliverable_dir / "repo_summary.md"
     dest.parent.mkdir(parents=True, exist_ok=True)
     dest.write_text(content, encoding="utf-8")
@@ -1059,6 +1087,10 @@ async def run_agent(
         if ctx.finished:
             break
 
+    # Resolve the sample's main language before logging, so the stat is correct
+    # even when the agent never called write_summary (fallback path below).
+    ctx.main_language = _dominant_code_language(ctx)
+
     # Write agent log for debugging
     _write_agent_log(deliverable_dir, agent_log, ctx)
 
@@ -1111,6 +1143,7 @@ async def run_agent(
         bash_calls=ctx.bash_calls,
         summary_md=ctx.summary_md,
         primary_language=primary,
+        main_language=ctx.main_language,
         repo_lang_distribution=repo_lang_distribution,
         lang_stats_source=stats.source,
         primary_forced=primary_forced,
@@ -1132,6 +1165,7 @@ def _write_agent_log(deliverable_dir: Path, agent_log: list[dict], ctx: _ToolCtx
             "bash_calls": ctx.bash_calls,
             "iterations": len({e["turn"] for e in agent_log}),
             "primary_language": ctx.primary_language or "",
+            "main_language": ctx.main_language,
             "primary_loc": _primary_loc(ctx),
             "sample_lang_distribution": sample_lang_distribution,
         },
