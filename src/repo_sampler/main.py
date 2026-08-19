@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import shutil
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -59,6 +60,32 @@ def _setup_logging(output_dir: Path | None = None) -> None:
             encoding="utf-8",
             rotation="100 MB",
         )
+
+
+# Top-level run artifacts that name real repos (URLs, local paths, error
+# messages) and therefore belong in the meta dir, not the deliverable.
+_ROOT_META_FILES = ("samples.jsonl", "samples.parquet", "errors.jsonl", "run.log")
+
+
+def _migrate_root_meta_files(output_dir: Path, meta_dir: Path) -> None:
+    """Move pre-meta-layout manifest/log files out of the output root.
+
+    Runs before anything reads the manifest, so resume state written by old
+    versions is found at its new home in the meta dir."""
+    for name in _ROOT_META_FILES:
+        legacy = output_dir / name
+        if not legacy.exists():
+            continue
+        meta_dir.mkdir(parents=True, exist_ok=True)
+        target = meta_dir / name
+        if target.exists():
+            # Both layouts have the file: the meta one stays authoritative,
+            # the legacy copy is parked rather than merged by guesswork.
+            target = meta_dir / (name + ".pre-meta")
+            if target.exists():
+                target.unlink()
+        shutil.move(str(legacy), str(target))
+        logger.warning(f"moved legacy {name} out of the output dir: {target}")
 
 
 def _load_repos(repos_file: Path) -> list[str]:
@@ -277,7 +304,7 @@ async def _process_repo(
                 _write_error(errors_path, url, fail_stage, f"{fail_msg} after retry")
                 # A --force re-run cleared the old deliverable folder; its old
                 # manifest record would now point at an empty folder.
-                if remove_record(output_dir / "samples.jsonl", url):
+                if remove_record(default_meta_dir(output_dir) / "samples.jsonl", url):
                     logger.warning(f"[{repo_name}] removed stale samples.jsonl record")
                 # Delete the rejected deliverable: a populated folder with a
                 # repo_summary.md would be picked up by the anonymize step and
@@ -292,7 +319,7 @@ async def _process_repo(
 
             stage = "write"
             commit_sha = await _get_commit_sha(clone_dest)
-            jsonl_path = output_dir / "samples.jsonl"
+            jsonl_path = default_meta_dir(output_dir) / "samples.jsonl"
             append_jsonl_with_meta(
                 result,
                 jsonl_path,
@@ -371,8 +398,10 @@ def run(
 ) -> None:
     """Process repos from file. Already completed repos are skipped automatically (use --force to override)."""
     output.mkdir(parents=True, exist_ok=True)
+    meta_dir = default_meta_dir(output)
     # run.log records repo URLs and clone diagnostics — meta dir, not output.
-    _setup_logging(default_meta_dir(output))
+    _setup_logging(meta_dir)
+    _migrate_root_meta_files(output, meta_dir)
     settings = Settings()
 
     if workers:
@@ -382,8 +411,9 @@ def run(
         settings.primary_language_override = canonical_lang
 
     repos = _load_repos(repos_file)
-    jsonl_path = output / "samples.jsonl"
-    errors_path = output / "errors.jsonl"
+    # The manifest and error log carry real repo URLs and paths — meta dir.
+    jsonl_path = meta_dir / "samples.jsonl"
+    errors_path = meta_dir / "errors.jsonl"
 
     if not force:
         processed = _load_processed(jsonl_path)
@@ -403,7 +433,7 @@ def run(
     )
 
     if format == "parquet":
-        write_parquet(output)
+        write_parquet(meta_dir)
 
     _print_summary_table(results)
 
@@ -498,6 +528,7 @@ def show_sample(
     """Full agent run for one repo. Writes deliverable to output/ and prints summary."""
     output.mkdir(parents=True, exist_ok=True)
     _setup_logging(default_meta_dir(output))
+    _migrate_root_meta_files(output, default_meta_dir(output))
     settings = Settings()
     canonical_lang = _validate_primary_language(primary_language)
     if canonical_lang:
@@ -604,6 +635,9 @@ def anonymize(
     if meta_dir is None:
         meta_dir = default_meta_dir(output)
     _setup_logging(meta_dir)
+    # Old runs left samples.jsonl / errors.jsonl / run.log at the output root;
+    # they name real repos, so an anonymize pass must relocate them too.
+    _migrate_root_meta_files(output, meta_dir)
     settings = Settings()
     if workers:
         settings.anonymizer_workers = workers

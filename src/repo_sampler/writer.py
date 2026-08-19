@@ -26,6 +26,7 @@ def _read_manifest(path: Path) -> list[dict]:
 
 def _rewrite_manifest(path: Path, records: list[dict]) -> None:
     # Write-then-rename: a kill mid-rewrite must never truncate the manifest.
+    path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(path.name + ".tmp")
     with jsonlines.open(tmp, mode="w") as writer:
         for r in records:
@@ -106,11 +107,13 @@ def remove_record(path: Path, repo_url: str) -> bool:
     return True
 
 
-def write_parquet(output_dir: Path) -> None:
+def write_parquet(meta_dir: Path) -> None:
+    """Mirror the manifest as parquet, next to it in the meta dir: both carry
+    real repo URLs and local paths, so neither belongs in the deliverable."""
     import pyarrow as pa
     import pyarrow.parquet as pq
 
-    jsonl_path = output_dir / "samples.jsonl"
+    jsonl_path = meta_dir / "samples.jsonl"
     if not jsonl_path.exists():
         return
 
@@ -151,4 +154,4 @@ def write_parquet(output_dir: Path) -> None:
         "lang_distribution_json": [r["lang_distribution_json"] for r in flat_records],
     })
 
-    pq.write_table(table, output_dir / "samples.parquet")
+    pq.write_table(table, meta_dir / "samples.parquet")
