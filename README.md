@@ -85,7 +85,9 @@ uv run repo-sampler anonymize ./output
 - `anonymization.diff` — точный список всех изменённых участков (было → стало);
 - `anonymization_report.json` — сводка по файлам (число правок, стоимость).
 
-**Не удаляйте `agent_log.json`, `anonymization.diff` и `anonymization_report.json` из выходной папки** — они нужны для проверки качества сэмплов на принимающей стороне.
+Всё, что не должно попасть к клиенту, — `agent_log.json` с сырыми (неанонимизированными) фрагментами кода, логи прогонов, аудит анонимизации — пишется в отдельную папку `<output>_meta` рядом с выходной. В `output` остаются только чистые анонимизированные сэмплы. Повторный запуск `anonymize` также выметает эти файлы из старых выгрузок, где они ещё лежат внутри папок сэмплов.
+
+**Не удаляйте папку `<output>_meta`** — `agent_log.json`, `anonymization.diff` и `anonymization_report.json` нужны для проверки качества сэмплов на принимающей стороне.
 
 ---
 
@@ -93,14 +95,17 @@ uv run repo-sampler anonymize ./output
 
 ```
 output/
-├── run.log                          # полный лог прогона
 ├── samples.jsonl                    # метаданные всех репозиториев
 ├── errors.jsonl                     # репозитории с ошибками (clone/agent)
 └── gitlab.com__owner__repo/
     ├── repo_summary.md              # обзор репозитория
-    ├── agent_log.json               # лог действий агента сбора
-    ├── samples/                     # отобранные файлы (verbatim)
-    │   └── <оригинальный/путь/файла>
+    └── samples/                     # отобранные файлы (verbatim)
+        └── <оригинальный/путь/файла>
+
+output_meta/                         # служебное, клиенту не отправляется
+├── run.log                          # полный лог прогона
+└── gitlab.com__owner__repo/
+    ├── agent_log.json               # лог действий агента сбора (сырые превью)
     ├── anonymization.diff           # ← после анонимизации: что изменено
     └── anonymization_report.json    # ← после анонимизации: сводка
 ```

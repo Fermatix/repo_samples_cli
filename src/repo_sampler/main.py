@@ -16,7 +16,7 @@ from rich.table import Table
 from .agent import AgentResult, AuthError, run_agent, url_to_folder_name
 from .anonymizer import run_anonymizer
 from .cloner import CloneError, checkout_latest_branch, cleanup_repo, clone_repo, rewrite_url
-from .config import Settings
+from .config import Settings, default_meta_dir
 from .languages import canonicalize
 from .writer import append_jsonl_with_meta, remove_record, write_parquet
 
@@ -371,7 +371,8 @@ def run(
 ) -> None:
     """Process repos from file. Already completed repos are skipped automatically (use --force to override)."""
     output.mkdir(parents=True, exist_ok=True)
-    _setup_logging(output)
+    # run.log records repo URLs and clone diagnostics — meta dir, not output.
+    _setup_logging(default_meta_dir(output))
     settings = Settings()
 
     if workers:
@@ -496,7 +497,7 @@ def show_sample(
 ) -> None:
     """Full agent run for one repo. Writes deliverable to output/ and prints summary."""
     output.mkdir(parents=True, exist_ok=True)
-    _setup_logging(output)
+    _setup_logging(default_meta_dir(output))
     settings = Settings()
     canonical_lang = _validate_primary_language(primary_language)
     if canonical_lang:
@@ -593,14 +594,16 @@ def anonymize(
     meta_dir: Optional[Path] = typer.Option(
         None,
         "--meta-dir",
-        help="Keep deliverables client-ready: write anonymization artifacts to "
-        "META_DIR/<folder>/ and move everything except samples/ and "
-        "repo_summary.md (agent_log.json, run.log, ...) there too",
+        help="Where to keep non-deliverable artifacts (anonymization.diff, "
+        "anonymization_report.json, stray files swept out of sample dirs). "
+        "Default: <OUTPUT>_meta next to the output dir",
     ),
 ) -> None:
     """Anonymize all sample deliverables in OUTPUT using a local Claude agent per directory."""
-    # With --meta-dir the deliverable tree must stay clean — log there instead.
-    _setup_logging(meta_dir if meta_dir else output)
+    # The deliverable tree must stay clean — artifacts and logs go to meta.
+    if meta_dir is None:
+        meta_dir = default_meta_dir(output)
+    _setup_logging(meta_dir)
     settings = Settings()
     if workers:
         settings.anonymizer_workers = workers
