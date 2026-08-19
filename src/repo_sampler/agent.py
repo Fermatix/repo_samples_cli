@@ -11,7 +11,7 @@ from pathlib import Path
 import httpx
 from loguru import logger
 
-from .config import Settings
+from .config import Settings, default_meta_dir
 from .languages import (
     COMMENT_PREFIXES,  # noqa: F401  (re-export for legacy imports)
     compute_language_stats,
@@ -699,11 +699,16 @@ async def run_agent(
     folder_name = url_to_folder_name(repo_url) if repo_url else repo_path.name
     repo_name = repo_url.rstrip("/").split("/")[-1] if repo_url else repo_path.name
     deliverable_dir = output_dir / folder_name
+    # agent_log.json holds raw un-anonymized code previews, so it lives next to
+    # the output tree, never inside it — the deliverable must stay shippable.
+    meta_repo_dir = default_meta_dir(output_dir) / folder_name
 
+    import shutil
     if deliverable_dir.exists():
-        import shutil
         shutil.rmtree(deliverable_dir)
         logger.info(f"[{repo_name}] cleared stale deliverable dir: {deliverable_dir}")
+    if meta_repo_dir.exists():
+        shutil.rmtree(meta_repo_dir)
     deliverable_dir.mkdir(parents=True, exist_ok=True)
 
     ctx = _ToolCtx(
@@ -1091,8 +1096,8 @@ async def run_agent(
     # even when the agent never called write_summary (fallback path below).
     ctx.main_language = _dominant_code_language(ctx)
 
-    # Write agent log for debugging
-    _write_agent_log(deliverable_dir, agent_log, ctx)
+    # Write agent log for debugging (to the meta dir, not the deliverable)
+    _write_agent_log(meta_repo_dir, agent_log, ctx)
 
     # Ensure summary exists even if agent forgot to write it
     if not ctx.summary_md:
@@ -1150,8 +1155,8 @@ async def run_agent(
     )
 
 
-def _write_agent_log(deliverable_dir: Path, agent_log: list[dict], ctx: _ToolCtx) -> None:
-    deliverable_dir.mkdir(parents=True, exist_ok=True)
+def _write_agent_log(meta_repo_dir: Path, agent_log: list[dict], ctx: _ToolCtx) -> None:
+    meta_repo_dir.mkdir(parents=True, exist_ok=True)
     total_loc = sum(f.loc_taken for f in ctx.saved_files)
     sample_lang_distribution: dict[str, int] = {}
     for f in ctx.saved_files:
@@ -1182,7 +1187,7 @@ def _write_agent_log(deliverable_dir: Path, agent_log: list[dict], ctx: _ToolCtx
         ],
         "agent_log": agent_log,
     }
-    (deliverable_dir / "agent_log.json").write_text(
+    (meta_repo_dir / "agent_log.json").write_text(
         json.dumps(log, ensure_ascii=False, indent=2), encoding="utf-8"
     )
 
