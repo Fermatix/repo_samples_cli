@@ -83,14 +83,41 @@ def test_clone_keeps_full_history_for_identity(tmp_path: Path) -> None:
     source.mkdir()
     _git(source, "init", "--quiet", "-b", "main")
     commits = [_commit(source, number) for number in range(12)]
+    _git(source, "checkout", "--quiet", "-b", "side")
+    side_tip = _commit(source, 99)
+    _git(source, "checkout", "--quiet", "main")
     destination = tmp_path / "clone"
 
     asyncio.run(clone_repo(str(source), destination))
     identity = collect_repo_identity(destination, "https://git.example.com/group/repo.git")
 
     assert _git(destination, "rev-list", "--count", "HEAD") == "12"
+    assert side_tip in _git(destination, "rev-list", "--all").splitlines()
     assert identity["first_commit_hash"] == commits[0]
     assert identity["early_commit_hashes"] == ",".join(commits[:10])
+
+
+def test_shallow_cached_clone_is_unshallowed(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    _git(source, "init", "--quiet", "-b", "main")
+    commits = [_commit(source, number) for number in range(12)]
+    _git(source, "checkout", "--quiet", "-b", "side")
+    side_tip = _commit(source, 99)
+    _git(source, "checkout", "--quiet", "main")
+    destination = tmp_path / "clone"
+    subprocess.run(
+        ["git", "clone", "--quiet", "--depth=1", source.as_uri(), str(destination)],
+        check=True,
+    )
+    assert _git(destination, "rev-parse", "--is-shallow-repository") == "true"
+
+    asyncio.run(clone_repo(str(source), destination))
+
+    assert _git(destination, "rev-parse", "--is-shallow-repository") == "false"
+    assert _git(destination, "rev-list", "--count", "HEAD") == "12"
+    assert side_tip in _git(destination, "rev-list", "--all").splitlines()
+    assert collect_repo_identity(destination, str(source))["first_commit_hash"] == commits[0]
 
 
 def test_repo_url_parts() -> None:

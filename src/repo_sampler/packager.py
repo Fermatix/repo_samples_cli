@@ -4,6 +4,7 @@ import csv
 import io
 import json
 import os
+import sys
 import tempfile
 import zipfile
 from importlib.metadata import PackageNotFoundError, version
@@ -67,9 +68,10 @@ def _safe_folder(record: dict) -> str:
 def _identity(meta_dir: Path, folder: str) -> dict[str, str]:
     path = meta_dir / folder / "repo_identity.json"
     if not path.exists():
-        logger.warning(
-            f"[{folder}] repo_identity.json is missing; packing a legacy run "
-            "with empty repository fingerprints"
+        print(
+            f"Warning: [{folder}] repo_identity.json is missing; packing a legacy run "
+            "with empty repository fingerprints",
+            file=sys.stderr,
         )
         return {}
     try:
@@ -133,6 +135,9 @@ def build_samples_archive(output_dir: Path, archive_path: Path) -> int:
     index_bytes, folders = _index_bytes(output_dir, records)
 
     archive_path = archive_path.resolve()
+    for _folder, source in folders:
+        if archive_path == source or archive_path.is_relative_to(source):
+            raise ValueError("Archive path must be outside sample folders")
     archive_path.parent.mkdir(parents=True, exist_ok=True)
     descriptor, temporary_name = tempfile.mkstemp(
         prefix=archive_path.name + ".",
@@ -147,7 +152,14 @@ def build_samples_archive(output_dir: Path, archive_path: Path) -> int:
         ) as archive:
             archive.writestr("samples_index.csv", index_bytes)
             for folder, source in folders:
-                for path in sorted(source.rglob("*")):
+                samples_dir = source / "samples"
+                if not samples_dir.is_dir():
+                    raise ValueError(f"Sample folder has no samples directory: {source}")
+                summary_path = source / "repo_summary.md"
+                if not summary_path.is_file():
+                    raise ValueError(f"Sample folder has no repo_summary.md: {source}")
+                paths = [summary_path, *sorted(samples_dir.rglob("*"))]
+                for path in paths:
                     if path.is_symlink():
                         logger.warning(f"[{folder}] skipping symlink: {path.relative_to(source)}")
                         continue

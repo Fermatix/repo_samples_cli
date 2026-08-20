@@ -324,15 +324,17 @@ async def _process_repo(
             stage = "write"
             commit_sha = await _get_commit_sha(clone_dest)
             jsonl_path = default_meta_dir(output_dir) / "samples.jsonl"
+            # Identity must land before the manifest marks this repo complete.
+            # If either write is interrupted, the next run may retry safely.
+            write_repo_identity(
+                default_meta_dir(output_dir) / folder_name / "repo_identity.json",
+                identity,
+            )
             append_jsonl_with_meta(
                 result,
                 jsonl_path,
                 model=settings.agent_model,
                 commit_sha=commit_sha,
-            )
-            write_repo_identity(
-                default_meta_dir(output_dir) / folder_name / "repo_identity.json",
-                identity,
             )
 
             test_loc = sum(f.loc_taken for f in result.files if f.layer == "test")
@@ -457,7 +459,6 @@ def pack_samples(
     ),
 ) -> None:
     """Build the ZIP archive accepted by the partner CRM cabinet."""
-    _setup_logging()
     try:
         count = build_samples_archive(output, archive)
     except ValueError as error:
