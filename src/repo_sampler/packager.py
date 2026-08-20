@@ -101,9 +101,9 @@ def _index_bytes(output_dir: Path, records: list[dict]) -> tuple[bytes, list[tup
         rows.append(
             {
                 "folder": folder,
-                "repo_name": identity.get("repo_name", record.get("repo_name", "")),
+                "repo_name": identity.get("repo_name", ""),
                 "repo_org": identity.get("repo_org", ""),
-                "repo_url": identity.get("repo_url", record.get("repo_url", "")),
+                "repo_url": identity.get("repo_url", ""),
                 "first_commit_hash": identity.get("first_commit_hash", ""),
                 "early_commit_hashes": identity.get("early_commit_hashes", ""),
                 "commit_minhash": identity.get("commit_minhash", ""),

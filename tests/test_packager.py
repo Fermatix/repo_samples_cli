@@ -91,7 +91,8 @@ def test_build_legacy_run_without_identity(tmp_path: Path) -> None:
             csv.DictReader(io.StringIO(archive.read("samples_index.csv").decode("utf-8")))
         )
     assert row["folder"] == folder
-    assert row["repo_url"] == "https://git.example.com/group/repo.git"
+    assert row["repo_name"] == ""
+    assert row["repo_url"] == ""
     assert row["first_commit_hash"] == ""
     assert row["early_commit_hashes"] == ""
     assert row["commit_minhash"] == ""
