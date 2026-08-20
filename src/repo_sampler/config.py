@@ -59,8 +59,8 @@ class Settings(BaseSettings):
 
     # Concurrency
     clone_workers: int = 10
-    # Multi-million-LOC repos take well over 2 minutes even with
-    # --depth=1 --filter=blob:none, so the default is generous.
+    # Full history is required for repository identity fingerprints, and large
+    # repositories can take well over 2 minutes, so the default is generous.
     clone_timeout: int = 900           # seconds per git clone
 
     # Anonymization (local Claude Code agent)

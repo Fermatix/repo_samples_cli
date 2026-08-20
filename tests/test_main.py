@@ -169,6 +169,11 @@ def test_rejected_deliverable_dir_is_deleted(tmp_path, monkeypatch):
     monkeypatch.setattr(main_mod, "clone_repo", fake_clone)
     monkeypatch.setattr(main_mod, "run_agent", fake_run_agent)
     monkeypatch.setattr(main_mod, "cleanup_repo", lambda p: None)
+    monkeypatch.setattr(
+        main_mod,
+        "collect_repo_identity",
+        lambda path, repo_url: {"repo_url": repo_url},
+    )
 
     settings = Settings(openrouter_api_key="k", clone_dir=str(tmp_path / "clones"))
 

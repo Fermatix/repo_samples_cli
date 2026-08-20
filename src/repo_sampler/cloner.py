@@ -95,10 +95,11 @@ async def clone_repo(url: str, dest: Path, timeout: int = 900) -> Path:
     dest.parent.mkdir(parents=True, exist_ok=True)
 
     proc = await asyncio.create_subprocess_exec(
-        # --no-single-branch fetches every branch tip (still shallow at depth 1)
+        # Identity fingerprints use every commit and must match repo_metadata_cli,
+        # so the sampler deliberately keeps full history across every branch.
         # so checkout_latest_branch can move off an empty/README-only default
         # branch to wherever the real code lives.
-        "git", "clone", "--depth=1", "--no-single-branch", "--quiet", url, str(dest),
+        "git", "clone", "--no-single-branch", "--quiet", url, str(dest),
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
         env=_clone_env(),
@@ -123,7 +124,7 @@ async def clone_repo(url: str, dest: Path, timeout: int = 900) -> Path:
         # matching how repo_metadata_cli reads the mirror in place. Best-effort:
         # a repo with no such refs just keeps the plain clone.
         rc, _, err = await _run_git(
-            ["fetch", "--depth=1", "--quiet", url,
+            ["fetch", "--quiet", url,
              "+refs/remotes/origin/*:refs/remotes/origin/*"],
             cwd=dest,
             timeout=timeout,
