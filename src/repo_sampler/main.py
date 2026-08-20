@@ -18,7 +18,9 @@ from .agent import AgentResult, AuthError, run_agent, url_to_folder_name
 from .anonymizer import run_anonymizer
 from .cloner import CloneError, checkout_latest_branch, cleanup_repo, clone_repo, rewrite_url
 from .config import Settings, default_meta_dir
+from .identity import collect_repo_identity, write_repo_identity
 from .languages import canonicalize
+from .packager import build_samples_archive
 from .writer import append_jsonl_with_meta, remove_record, write_parquet
 
 app = typer.Typer(help="CLI tool for extracting representative code samples from git repositories.")
@@ -273,6 +275,8 @@ async def _process_repo(
                 logger.info(f"[{repo_name}] dry-run: {file_count} files found")
                 return {"repo_url": url, "repo_name": repo_name, "folder_name": folder_name, "dry_run": True}
 
+            identity = await asyncio.to_thread(collect_repo_identity, clone_dest, url)
+
             _log_clone_diagnostics(repo_name, clone_dest)
             stage = "agent"
             logger.info(f"[{repo_name}] starting agent ({settings.agent_model})...")
@@ -325,6 +329,10 @@ async def _process_repo(
                 jsonl_path,
                 model=settings.agent_model,
                 commit_sha=commit_sha,
+            )
+            write_repo_identity(
+                default_meta_dir(output_dir) / folder_name / "repo_identity.json",
+                identity,
             )
 
             test_loc = sum(f.loc_taken for f in result.files if f.layer == "test")
@@ -436,6 +444,25 @@ def run(
         write_parquet(meta_dir)
 
     _print_summary_table(results)
+
+
+@app.command("pack")
+def pack_samples(
+    output: Path = typer.Argument(Path("./output"), help="Sample output directory"),
+    archive: Path = typer.Option(
+        Path("./repo_samples.zip"),
+        "--archive",
+        "-a",
+        help="ZIP archive to create for CRM upload",
+    ),
+) -> None:
+    """Build the ZIP archive accepted by the partner CRM cabinet."""
+    _setup_logging()
+    try:
+        count = build_samples_archive(output, archive)
+    except ValueError as error:
+        raise typer.BadParameter(str(error)) from error
+    console.print(f"Packed {count} repositories into {archive}")
 
 
 async def _run_all(
