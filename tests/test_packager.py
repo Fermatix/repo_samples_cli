@@ -80,7 +80,7 @@ def test_build_samples_archive(tmp_path: Path) -> None:
     }
 
 
-def test_build_legacy_run_without_identity(tmp_path: Path) -> None:
+def test_build_legacy_run_without_identity(tmp_path: Path, capfd) -> None:
     output, folder = _write_run(tmp_path, with_identity=False)
     archive_path = tmp_path / "legacy.zip"
 
@@ -97,6 +97,7 @@ def test_build_legacy_run_without_identity(tmp_path: Path) -> None:
     assert row["early_commit_hashes"] == ""
     assert row["commit_minhash"] == ""
     assert row["head_commit_sha"] == ""
+    assert "repo_identity.json is missing" in capfd.readouterr().err
 
 
 def test_missing_sample_folder_does_not_replace_archive(tmp_path: Path) -> None:
@@ -114,3 +115,23 @@ def test_missing_sample_folder_does_not_replace_archive(tmp_path: Path) -> None:
         build_samples_archive(output, archive_path)
 
     assert archive_path.read_bytes() == b"previous archive"
+
+
+def test_service_artifacts_are_never_packed(tmp_path: Path) -> None:
+    output, folder = _write_run(tmp_path)
+    (output / folder / "agent_log.json").write_text("raw preview")
+    (output / folder / "anonymization.diff").write_text("audit")
+    archive_path = tmp_path / "samples.zip"
+
+    build_samples_archive(output, archive_path)
+
+    with zipfile.ZipFile(archive_path) as archive:
+        assert not any("agent_log" in name for name in archive.namelist())
+        assert not any("anonymization" in name for name in archive.namelist())
+
+
+def test_archive_cannot_be_written_inside_sample_folder(tmp_path: Path) -> None:
+    output, folder = _write_run(tmp_path)
+
+    with pytest.raises(ValueError, match="outside sample folders"):
+        build_samples_archive(output, output / folder / "archive.zip")
