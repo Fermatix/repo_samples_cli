@@ -1,4 +1,12 @@
+from pathlib import Path
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+def default_meta_dir(output_dir: Path) -> Path:
+    """Sibling of the output dir for everything that must never ship to the
+    client: agent logs with raw code previews, run logs, anonymization diffs."""
+    return output_dir.parent / (output_dir.name + "_meta")
 
 
 class Settings(BaseSettings):

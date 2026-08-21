@@ -7,7 +7,7 @@ import pytest
 import respx
 
 from repo_sampler.agent import AuthError, run_agent
-from repo_sampler.config import Settings
+from repo_sampler.config import Settings, default_meta_dir
 
 
 def _make_settings(**kwargs) -> Settings:
@@ -87,7 +87,9 @@ async def test_happy_path_creates_deliverable():
         folder = out / result.folder_name
         assert (folder / "samples" / "src" / "engine.py").exists()
         assert (folder / "repo_summary.md").exists()
-        assert (folder / "agent_log.json").exists()
+        # The agent log (raw previews) lives in the meta dir, not the deliverable
+        assert not (folder / "agent_log.json").exists()
+        assert (default_meta_dir(out) / result.folder_name / "agent_log.json").exists()
 
 
 @pytest.mark.asyncio
@@ -336,7 +338,7 @@ async def test_saved_files_carry_language():
 
         assert result.files[0].language == "Python"
         assert result.primary_language == "Python"
-        log = json.loads((out / result.folder_name / "agent_log.json").read_text())
+        log = json.loads((default_meta_dir(out) / result.folder_name / "agent_log.json").read_text())
         assert log["stats"]["primary_language"] == "Python"
         assert log["stats"]["sample_lang_distribution"] == {"Python": 3}
         assert log["saved_files"][0]["language"] == "Python"
@@ -374,7 +376,7 @@ async def test_primary_language_nudge_fires():
                     client=client,
                 )
 
-        log = json.loads((out / result.folder_name / "agent_log.json").read_text())
+        log = json.loads((default_meta_dir(out) / result.folder_name / "agent_log.json").read_text())
         nudges = [e["nudge"] for e in log["agent_log"] if "nudge" in e]
         assert any("LANGUAGE FOCUS" in n for n in nudges)
         assert any("Python" in n for n in nudges)
@@ -522,7 +524,7 @@ async def test_unrecoverable_language_state_ends_run_early():
         # one save (40 LOC of md), then the loop detects unrecoverability:
         # need = ceil((0.2*40 - 0)/0.8) = 10 > headroom 5 -> abort
         assert calls == 1
-        log = json.loads((out / result.folder_name / "agent_log.json").read_text())
+        log = json.loads((default_meta_dir(out) / result.folder_name / "agent_log.json").read_text())
         aborted = [e for e in log["agent_log"] if "aborted" in e]
         assert aborted and "unrecoverable" in aborted[0]["aborted"]
 
@@ -601,7 +603,7 @@ async def test_hard_mode_prompt_and_nudge_wording(monkeypatch):
 
         assert "Language coverage — HARD REQUIREMENT" in captured[0]["messages"][0]["content"]
         assert "HARD REQUIREMENT: at least 20%" in captured[0]["messages"][1]["content"]
-        log = json.loads((out / result.folder_name / "agent_log.json").read_text())
+        log = json.loads((default_meta_dir(out) / result.folder_name / "agent_log.json").read_text())
         nudges = [e["nudge"] for e in log["agent_log"] if "nudge" in e]
         assert any("LANGUAGE REQUIREMENT FAILING" in n for n in nudges)
         assert result.primary_forced is True
@@ -641,7 +643,7 @@ async def test_soft_unreachable_goal_does_not_abort():
                 )
 
         assert result.total_loc == 40           # run completed, sample kept
-        log = json.loads((out / result.folder_name / "agent_log.json").read_text())
+        log = json.loads((default_meta_dir(out) / result.folder_name / "agent_log.json").read_text())
         assert not [e for e in log["agent_log"] if "aborted" in e]
         focus_nudges = [e for e in log["agent_log"] if "LANGUAGE FOCUS" in e.get("nudge", "")]
         assert not focus_nudges                  # silenced, not nagging
@@ -757,7 +759,7 @@ async def test_logic_share_in_save_result_and_bash_progress():
                     output_dir=out, settings=settings, client=client,
                 )
 
-        log = json.loads((out / result.folder_name / "agent_log.json").read_text())
+        log = json.loads((default_meta_dir(out) / result.folder_name / "agent_log.json").read_text())
         save_previews = [e["result_preview"] for e in log["agent_log"] if e.get("tool") == "save_sample"]
         assert any('"logic_share"' in p for p in save_previews)
         bash_previews = [e["result_preview"] for e in log["agent_log"] if e.get("tool") == "bash"]
@@ -793,7 +795,7 @@ async def test_logic_share_nudge_fires_on_boilerplate_heavy_sample():
                     output_dir=out, settings=settings, client=client,
                 )
 
-        log = json.loads((out / result.folder_name / "agent_log.json").read_text())
+        log = json.loads((default_meta_dir(out) / result.folder_name / "agent_log.json").read_text())
         nudges = [e["nudge"] for e in log["agent_log"] if "nudge" in e]
         assert any("LOGIC SHARE LOW" in n for n in nudges)
 
@@ -830,7 +832,7 @@ async def test_main_language_written_to_summary():
         assert result.main_language == "TypeScript"
         summary = (out / result.folder_name / "repo_summary.md").read_text()
         assert summary.startswith("**Main language:** TypeScript")
-        log = json.loads((out / result.folder_name / "agent_log.json").read_text())
+        log = json.loads((default_meta_dir(out) / result.folder_name / "agent_log.json").read_text())
         assert log["stats"]["main_language"] == "TypeScript"
 
 
@@ -887,7 +889,7 @@ async def test_main_language_set_even_without_write_summary():
                     output_dir=out, settings=settings, client=client,
                 )
         assert result.main_language == "Python"
-        log = json.loads((out / result.folder_name / "agent_log.json").read_text())
+        log = json.loads((default_meta_dir(out) / result.folder_name / "agent_log.json").read_text())
         assert log["stats"]["main_language"] == "Python"
         summary = (out / result.folder_name / "repo_summary.md").read_text()
         assert summary.startswith("**Main language:** Python")

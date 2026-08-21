@@ -12,6 +12,7 @@ from repo_sampler.anonymizer import (
     compute_diff,
     discover_sample_dirs,
     is_anonymized,
+    run_anonymizer,
     snapshot_targets,
 )
 from repo_sampler.config import Settings
@@ -75,11 +76,19 @@ def test_is_anonymized_with_meta_dir():
         d = _make_sample_dir(root, "repo")
         meta = root / "meta"
         assert is_anonymized(d, meta) is False
-        # marker in the sample dir itself must not count in meta mode
-        (d / "anonymization_report.json").write_text("{}")
-        assert is_anonymized(d, meta) is False
         (meta / "repo").mkdir(parents=True)
         (meta / "repo" / "anonymization_report.json").write_text("{}")
+        assert is_anonymized(d, meta) is True
+
+
+def test_is_anonymized_legacy_marker_counts_in_meta_mode():
+    """Dirs anonymized before the meta-dir default (report inside the sample
+    dir) must not be re-anonymized on a rerun."""
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        d = _make_sample_dir(root, "repo")
+        meta = root / "meta"
+        (d / "anonymization_report.json").write_text("{}")
         assert is_anonymized(d, meta) is True
 
 
@@ -123,6 +132,27 @@ def test_anonymize_dir_meta_mode_keeps_deliverable_clean(monkeypatch):
         assert (meta / "repo" / "anonymization_report.json").exists()
         assert (meta / "repo" / "anonymization.diff").exists()
         assert (meta / "repo" / "agent_log.json").exists()
+        assert is_anonymized(d, meta) is True
+
+
+def test_run_anonymizer_sweeps_already_anonymized_dirs(monkeypatch):
+    """A rerun over a legacy output (agent_log.json and artifacts inside the
+    sample dirs) must sweep them to meta even when anonymization is skipped."""
+    _stub_claude(monkeypatch)
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        d = _make_sample_dir(root, "repo")
+        (d / "anonymization_report.json").write_text("{}")
+        (d / "anonymization.diff").write_text("--- a\n+++ b\n")
+        (d / "agent_log.json").write_text('{"raw": "not anonymized"}')
+        meta = root / "meta"
+
+        results = asyncio.run(run_anonymizer(root, Settings(), force=False, meta_dir=meta))
+
+        assert results == []  # nothing re-anonymized
+        assert sorted(p.name for p in d.iterdir()) == ["repo_summary.md", "samples"]
+        assert (meta / "repo" / "agent_log.json").exists()
+        assert (meta / "repo" / "anonymization_report.json").exists()
         assert is_anonymized(d, meta) is True
 
 
