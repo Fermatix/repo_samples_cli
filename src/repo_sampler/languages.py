@@ -200,6 +200,10 @@ NON_CODE_LANGS = frozenset({
     "Plain Text", "CSV", "YAML", "TOML", "INI", "XML", "XML Schema", "XAML",
     "License", "Properties File", "Docker ignore",
     "Mustache", "Handlebars", "Jade", "HAML", "Jupyter",
+    # SQL added 2026-08-08: committed DB dumps (multi-megabyte INSERT files)
+    # were scoring the "primary" language and masking the real one; kept in
+    # sync with repo_metadata_cli non_code_languages and lord-of-the-repos.
+    "SQL",
 })
 
 # A focus language must hold at least this share of the repo's counted lines —

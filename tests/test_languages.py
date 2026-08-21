@@ -247,7 +247,10 @@ def test_logicless_templates_are_not_code():
     assert not is_code_language("Jupyter")
     assert is_code_language("Twig Template")
     assert is_code_language("Blade template")
-    assert is_code_language("SQL")
+    # SQL перевели в не-код 2026-08-08: закоммиченные дампы БД перевешивали
+    # настоящий язык репозитория (согласовано с repo_metadata_cli).
+    # .sql-файлы по-прежнему сэмплируются — SQL лишь не выбирается фокусом.
+    assert not is_code_language("SQL")
 
 
 def test_xaml_is_markup_not_focus():
