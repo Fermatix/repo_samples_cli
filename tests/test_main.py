@@ -2,11 +2,46 @@ import json
 import tempfile
 from pathlib import Path
 
-from repo_sampler.main import _load_processed, _load_repos
+from repo_sampler.main import _load_processed, _load_repos, _migrate_root_meta_files
 
 
 def _write_jsonl(path: Path, records: list[dict]) -> None:
     path.write_text("\n".join(json.dumps(r) for r in records) + "\n")
+
+
+def test_migrate_root_meta_files_moves_legacy_manifest(tmp_path):
+    """Pre-meta-layout runs left samples.jsonl etc. at the output root; a new
+    run must relocate them so resume state is found and output stays clean."""
+    output = tmp_path / "output"
+    meta = tmp_path / "output_meta"
+    output.mkdir()
+    _write_jsonl(output / "samples.jsonl", [{"repo_url": "https://h/o/r", "total_loc": 10}])
+    (output / "errors.jsonl").write_text("{}\n")
+    (output / "keep-me.txt").write_text("not a meta file")
+
+    _migrate_root_meta_files(output, meta)
+
+    assert not (output / "samples.jsonl").exists()
+    assert not (output / "errors.jsonl").exists()
+    assert (output / "keep-me.txt").exists()
+    assert _load_processed(meta / "samples.jsonl") == {"https://h/o/r"}
+
+
+def test_migrate_root_meta_files_parks_on_collision(tmp_path):
+    """If both layouts have the file, the meta one stays authoritative and the
+    legacy copy is parked, not merged over it."""
+    output = tmp_path / "output"
+    meta = tmp_path / "output_meta"
+    output.mkdir()
+    meta.mkdir()
+    (output / "samples.jsonl").write_text("legacy\n")
+    (meta / "samples.jsonl").write_text("current\n")
+
+    _migrate_root_meta_files(output, meta)
+
+    assert not (output / "samples.jsonl").exists()
+    assert (meta / "samples.jsonl").read_text() == "current\n"
+    assert (meta / "samples.jsonl.pre-meta").read_text() == "legacy\n"
 
 
 def test_load_processed_skips_zero_loc_records():

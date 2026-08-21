@@ -17,9 +17,9 @@ SKIP_DIRS = {"archive"}
 # Files inside a sample dir that must not be touched / not counted in the diff.
 _DIFF_EXCLUDES = ["agent_log.json", "anonymization.*", ".*"]
 
-# What a client-facing deliverable may contain. With --meta-dir, everything
-# else (agent_log.json with raw un-anonymized previews, stray files) is moved
-# out so it cannot be sent to the client by accident.
+# What a client-facing deliverable may contain. Everything else (stray files,
+# agent_log.json left by pre-meta-dir runs with raw un-anonymized previews) is
+# moved to the meta dir so it cannot be sent to the client by accident.
 _DELIVERABLE_KEEP = {"samples", "repo_summary.md"}
 
 
@@ -77,8 +77,11 @@ def discover_sample_dirs(output_dir: Path, skip: set[str] | None = None) -> list
 
 
 def is_anonymized(sample_dir: Path, meta_dir: Path | None = None) -> bool:
-    base = meta_dir / sample_dir.name if meta_dir else sample_dir
-    return (base / "anonymization_report.json").exists()
+    if meta_dir and (meta_dir / sample_dir.name / "anonymization_report.json").exists():
+        return True
+    # Legacy layout: reports used to live inside the sample dir itself. Still
+    # counts — re-anonymizing such dirs would burn money for nothing.
+    return (sample_dir / "anonymization_report.json").exists()
 
 
 # ---------------------------------------------------------------------------
@@ -299,10 +302,18 @@ async def run_anonymizer(
 
     if not force:
         original = len(dirs)
+        done = [d for d in dirs if is_anonymized(d, meta_dir)]
         dirs = [d for d in dirs if not is_anonymized(d, meta_dir)]
         skipped = original - len(dirs)
         if skipped:
             logger.info(f"Skipping {skipped} already anonymized dirs (use --force to redo)")
+        # Skipped dirs still get swept: legacy runs left agent_log.json and
+        # anonymization artifacts inside the deliverable.
+        if meta_dir:
+            for d in done:
+                target = meta_dir / d.name
+                target.mkdir(parents=True, exist_ok=True)
+                _sweep_non_deliverables(d, target)
 
     logger.info(
         f"Anonymizing {len(dirs)} dirs | "
