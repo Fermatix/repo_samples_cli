@@ -211,6 +211,39 @@ def test_checkout_latest_branch_moves_off_readme_only_default():
         assert (dest / "engine.py").exists()        # switched to the code branch
 
 
+def test_checkout_latest_branch_reaches_remote_tracking_branch_in_mirror():
+    """Regression: a local *mirror* (made by `git clone`) keeps non-default
+    branches as remote-tracking refs (refs/remotes/origin/*), which a plain
+    `git clone <mirror>` does NOT copy. The code branch must still be reached."""
+    with tempfile.TemporaryDirectory() as tmp:
+        upstream = Path(tmp) / "upstream"
+        upstream.mkdir(parents=True)
+        _git(upstream, "init", "--quiet", "-b", "main")
+        (upstream / "README.md").write_text("# readme\n")
+        _git(upstream, "add", ".")
+        _git(upstream, "commit", "--quiet", "-m", "readme", date="2020-01-01T00:00:00")
+        _git(upstream, "checkout", "--quiet", "-b", "feature/code")
+        (upstream / "engine.py").write_text("def run():\n    return 42\n")
+        _git(upstream, "add", ".")
+        _git(upstream, "commit", "--quiet", "-m", "code", date="2022-01-01T00:00:00")
+        _git(upstream, "checkout", "--quiet", "main")
+
+        # Mirror = plain clone of upstream: 'main' is a local head, 'feature/code'
+        # exists only under refs/remotes/origin/* — exactly like our partner mirrors.
+        mirror = Path(tmp) / "mirror"
+        subprocess.run(["git", "clone", "--quiet", str(upstream), str(mirror)], check=True)
+
+        dest = Path(tmp) / "clones" / "dest"
+
+        async def _run():
+            await clone_repo(str(mirror), dest)
+            return await checkout_latest_branch(dest)
+
+        selected = asyncio.run(_run())
+        assert selected == "refs/remotes/origin/feature/code"
+        assert (dest / "engine.py").exists()   # reached the code branch, not empty main
+
+
 def test_checkout_latest_branch_single_branch_is_stable():
     """A repo with only the default branch must still resolve and stay valid."""
     with tempfile.TemporaryDirectory() as tmp:
