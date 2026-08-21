@@ -89,6 +89,18 @@ uv run repo-sampler anonymize ./output
 
 **Не удаляйте папку `<output>_meta`** — `agent_log.json`, `anonymization.diff` и `anonymization_report.json` нужны для проверки качества сэмплов на принимающей стороне.
 
+### 7. Упаковка для CRM
+
+После анонимизации соберите один архив:
+
+```bash
+uv run repo-sampler pack ./output --archive repo_samples.zip
+```
+
+Загрузите `repo_samples.zip` во вкладке «Сэмплы» кабинета. Команда кладёт сэмплы в `samples/` и добавляет `samples_index.csv` с объёмом сэмпла и идентификаторами репозитория. Служебные файлы из `output_meta` в архив не попадают.
+
+Старый прогон без `repo_identity.json` также упакуется. Команда предупредит о пустых идентификаторах; кабинет покажет такие строки в списке «Не разобрано».
+
 ---
 
 ## Структура вывода
@@ -106,6 +118,7 @@ output_meta/                         # служебное, клиенту не �
 ├── run.log                          # полный лог прогона
 └── gitlab.com__owner__repo/
     ├── agent_log.json               # лог действий агента сбора (сырые превью)
+    ├── repo_identity.json           # идентификаторы для матчинга в CRM
     ├── anonymization.diff           # ← после анонимизации: что изменено
     └── anonymization_report.json    # ← после анонимизации: сводка
 ```
