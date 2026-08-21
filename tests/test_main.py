@@ -169,6 +169,11 @@ def test_rejected_deliverable_dir_is_deleted(tmp_path, monkeypatch):
     monkeypatch.setattr(main_mod, "clone_repo", fake_clone)
     monkeypatch.setattr(main_mod, "run_agent", fake_run_agent)
     monkeypatch.setattr(main_mod, "cleanup_repo", lambda p: None)
+    monkeypatch.setattr(
+        main_mod,
+        "collect_repo_identity",
+        lambda path, repo_url: {"repo_url": repo_url},
+    )
 
     settings = Settings(openrouter_api_key="k", clone_dir=str(tmp_path / "clones"))
 
@@ -186,6 +191,87 @@ def test_rejected_deliverable_dir_is_deleted(tmp_path, monkeypatch):
     assert not (output / folder).exists()          # rejected deliverable removed
     assert (output / "errors.jsonl").exists()
     assert "agent_no_primary_lang" in (output / "errors.jsonl").read_text()
+
+
+def test_successful_process_writes_identity_before_manifest(tmp_path, monkeypatch):
+    import asyncio
+
+    import httpx
+
+    from repo_sampler import main as main_mod
+
+    url = "https://h.com/o/r"
+    folder = "h.com__o__r"
+    output = tmp_path / "out"
+    output.mkdir()
+    result = _result_with([("a.php", 5000, "PHP")], primary="PHP")
+    result.repo_url = url
+    result.folder_name = folder
+
+    async def fake_clone(_url, destination, timeout=0):
+        destination.mkdir(parents=True, exist_ok=True)
+
+    async def fake_checkout(_path):
+        return "origin/main"
+
+    async def fake_run_agent(repo_path, repo_url, output_dir, settings, client):
+        sample_dir = output_dir / folder / "samples"
+        sample_dir.mkdir(parents=True)
+        (sample_dir / "a.php").write_text("<?php\n")
+        (output_dir / folder / "repo_summary.md").write_text("summary")
+        meta_dir = main_mod.default_meta_dir(output_dir) / folder
+        meta_dir.mkdir(parents=True)
+        (meta_dir / "agent_log.json").write_text("{}")
+        return result
+
+    async def fake_commit_sha(_path):
+        return "abcdef0"
+
+    events = []
+    write_identity = main_mod.write_repo_identity
+    append_manifest = main_mod.append_jsonl_with_meta
+
+    def tracked_identity(path, identity):
+        events.append("identity")
+        write_identity(path, identity)
+
+    def tracked_manifest(agent_result, path, **kwargs):
+        identity_path = main_mod.default_meta_dir(output) / folder / "repo_identity.json"
+        assert identity_path.exists()
+        events.append("manifest")
+        append_manifest(agent_result, path, **kwargs)
+
+    monkeypatch.setattr(main_mod, "clone_repo", fake_clone)
+    monkeypatch.setattr(main_mod, "checkout_latest_branch", fake_checkout)
+    monkeypatch.setattr(main_mod, "run_agent", fake_run_agent)
+    monkeypatch.setattr(main_mod, "_get_commit_sha", fake_commit_sha)
+    monkeypatch.setattr(main_mod, "cleanup_repo", lambda _path: None)
+    monkeypatch.setattr(
+        main_mod,
+        "collect_repo_identity",
+        lambda _path, repo_url: {"repo_url": repo_url, "head_commit_sha": "a" * 40},
+    )
+    monkeypatch.setattr(main_mod, "write_repo_identity", tracked_identity)
+    monkeypatch.setattr(main_mod, "append_jsonl_with_meta", tracked_manifest)
+    settings = Settings(openrouter_api_key="k", clone_dir=str(tmp_path / "clones"))
+
+    async def go():
+        async with httpx.AsyncClient() as client:
+            return await main_mod._process_repo(
+                url,
+                output,
+                settings,
+                client,
+                keep_clones=True,
+                dry_run=False,
+                clone_sem=asyncio.Semaphore(1),
+                errors_path=output / "errors.jsonl",
+            )
+
+    processed = asyncio.run(go())
+    assert "error" not in processed
+    assert events == ["identity", "manifest"]
+    assert (main_mod.default_meta_dir(output) / "samples.jsonl").exists()
 
 
 def test_result_failure_soft_share_not_rejected():
