@@ -72,6 +72,21 @@ def _kill_proc_tree(proc) -> None:
             proc.kill()
 
 
+def _is_local_git_source(url: str) -> bool:
+    """True when *url* is a local filesystem path to a git repo (not a remote URL).
+
+    Local mirrors made by a plain ``git clone`` keep non-default branches as
+    remote-tracking refs (``refs/remotes/origin/*``). ``git clone <local>`` only
+    transfers ``refs/heads/*`` — so such a mirror clones to just its (often empty)
+    default branch, and the branch where the code lives never reaches the copy.
+    """
+    if "://" in url or url.startswith("git@"):
+        return False
+    with contextlib.suppress(OSError):
+        return Path(url).is_dir()
+    return False
+
+
 async def clone_repo(url: str, dest: Path, timeout: int = 900) -> Path:
     if dest.exists():
         logger.debug(f"Cache hit, skipping clone: {dest}")
@@ -99,6 +114,22 @@ async def clone_repo(url: str, dest: Path, timeout: int = 900) -> Path:
 
     if proc.returncode != 0:
         raise CloneError(url, stderr.decode(errors="replace"))
+
+    if _is_local_git_source(url):
+        # git clone of a local mirror copies only refs/heads/* (typically just
+        # the empty default branch); branches the mirror stores under
+        # refs/remotes/origin/* — where the code often lives — are left behind.
+        # Pull them in so checkout_latest_branch can select the real branch,
+        # matching how repo_metadata_cli reads the mirror in place. Best-effort:
+        # a repo with no such refs just keeps the plain clone.
+        rc, _, err = await _run_git(
+            ["fetch", "--depth=1", "--quiet", url,
+             "+refs/remotes/origin/*:refs/remotes/origin/*"],
+            cwd=dest,
+            timeout=timeout,
+        )
+        if rc != 0:
+            logger.debug("local-branch fetch for %s failed: %s", url, err.strip())
 
     return dest
 
