@@ -11,6 +11,7 @@ from pathlib import Path
 import httpx
 from loguru import logger
 
+from .backends import AuthError, complete_turn
 from .config import Settings, default_meta_dir
 from .languages import (
     COMMENT_PREFIXES,  # noqa: F401  (re-export for legacy imports)
@@ -67,10 +68,6 @@ class AgentResult:
     repo_lang_distribution: dict[str, float] = field(default_factory=dict)
     lang_stats_source: str = ""                # "scc" | "walk" | "empty"
     primary_forced: bool = False               # True when set via override
-
-
-class AuthError(Exception):
-    pass
 
 
 # ---------------------------------------------------------------------------
@@ -548,89 +545,6 @@ def _prune_old_assistant_messages(messages: list[dict], keep_last: int = 3) -> N
 
 
 # ---------------------------------------------------------------------------
-# HTTP call to OpenRouter
-# ---------------------------------------------------------------------------
-
-async def _call_openrouter(
-    messages: list[dict],
-    settings: Settings,
-    client: httpx.AsyncClient,
-) -> dict:
-    payload = {
-        "model": settings.agent_model,
-        "messages": messages,
-        "tools": TOOLS,
-        "tool_choice": "auto",
-        "max_tokens": 1024,
-    }
-    headers = {
-        "Authorization": f"Bearer {settings.openrouter_api_key}",
-        "Content-Type": "application/json",
-        "HTTP-Referer": "https://github.com/repo-sampler",
-        "X-Title": "repo-sampler",
-    }
-
-    for attempt in range(3):
-        try:
-            resp = await client.post(
-                f"{settings.openrouter_base_url}/chat/completions",
-                json=payload,
-                headers=headers,
-                timeout=120.0,
-            )
-        except httpx.TimeoutException:
-            wait = 2 ** attempt
-            logger.warning(f"OpenRouter timeout, retrying in {wait}s")
-            await asyncio.sleep(wait)
-            continue
-
-        if resp.status_code == 401:
-            raise AuthError("HTTP 401: invalid API key")
-        if resp.status_code in (402, 403):
-            # OpenRouter returns these when the key is blocked or its spending
-            # limit is exhausted — every subsequent call will fail the same way.
-            raise AuthError(
-                f"HTTP {resp.status_code}: OpenRouter key blocked or spending limit reached"
-            )
-        if resp.status_code in (429, 500, 502, 503):
-            wait = 2 ** attempt
-            logger.warning(f"HTTP {resp.status_code}, retrying in {wait}s")
-            await asyncio.sleep(wait)
-            continue
-
-        resp.raise_for_status()
-        try:
-            return resp.json()
-        except (json.JSONDecodeError, ValueError):
-            # HTTP 200 but the body is not JSON (HTML error page, empty body,
-            # or an SSE/stream). Without logging the raw body this surfaces only
-            # as an opaque "Expecting value: line N column 1" parser error in
-            # errors.jsonl, with no way to tell what the API actually returned.
-            # Log the full body so it can be investigated, then retry like a
-            # transient 5xx. These responses are rare (a handful per run), so
-            # the full dump does not flood the log. A generous cap is kept only
-            # as a guard against a pathological multi-MB body, and any trim is
-            # made explicit (body_len + dropped count) so nothing is lost
-            # silently.
-            wait = 2 ** attempt
-            body = resp.text or ""
-            cap = 20000
-            shown = body if len(body) <= cap else body[:cap] + f"…[+{len(body) - cap} more chars]"
-            ctype = resp.headers.get("content-type", "")
-            rid = (resp.headers.get("x-request-id")
-                   or resp.headers.get("x-openrouter-request-id", ""))
-            logger.warning(
-                f"OpenRouter returned non-JSON body (status={resp.status_code} "
-                f"content-type={ctype!r} request-id={rid!r} body_len={len(body)}), "
-                f"retrying in {wait}s; body={shown!r}"
-            )
-            await asyncio.sleep(wait)
-            continue
-
-    raise RuntimeError("OpenRouter call failed after 3 attempts")
-
-
-# ---------------------------------------------------------------------------
 # URL → folder name
 # ---------------------------------------------------------------------------
 
@@ -984,7 +898,7 @@ async def run_agent(
             messages.append({"role": "user", "content": nudge})
             agent_log.append({"turn": iteration + 1, "nudge": nudge})
 
-        data = await _call_openrouter(messages, settings, client)
+        data = await complete_turn(messages, TOOLS, settings, client)
         choices = data.get("choices") or []
         if not choices:
             logger.warning(f"[{repo_name}] empty choices in API response, skipping turn")

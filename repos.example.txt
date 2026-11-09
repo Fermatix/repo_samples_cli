@@ -1,0 +1,4 @@
+# Blank lines and lines starting with # are ignored
+
+git@git.example.com:group/service-api.git
+https://github.com/example-org/mobile-app.git

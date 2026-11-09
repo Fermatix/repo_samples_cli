@@ -1,4 +1,5 @@
 from pathlib import Path
+from typing import Literal
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -17,6 +18,12 @@ class Settings(BaseSettings):
 
     # Model for the agentic sampling loop
     agent_model: str = "deepseek/deepseek-v4-flash"
+
+    # Backend for the agentic sampling loop
+    agent_backend: Literal["openrouter", "claude", "codex"] = "openrouter"
+    agent_cli_model: str = ""          # model for the claude/codex backends ("" = ANONYMIZER_MODEL for claude, Codex built-in default for codex)
+    agent_cli_timeout: int = 300       # seconds per CLI turn
+    agent_cli_concurrency: int = 4     # parallel CLI turns
 
     # Sample targets (injected into agent system prompt as instructions)
     target_loc: int = 5000

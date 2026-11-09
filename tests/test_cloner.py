@@ -229,7 +229,7 @@ def test_checkout_latest_branch_reaches_remote_tracking_branch_in_mirror():
         _git(upstream, "checkout", "--quiet", "main")
 
         # Mirror = plain clone of upstream: 'main' is a local head, 'feature/code'
-        # exists only under refs/remotes/origin/* — exactly like our partner mirrors.
+        # exists only under refs/remotes/origin/* — exactly like a typical mirror.
         mirror = Path(tmp) / "mirror"
         subprocess.run(["git", "clone", "--quiet", str(upstream), str(mirror)], check=True)
 

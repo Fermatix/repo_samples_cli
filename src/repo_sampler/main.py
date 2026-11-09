@@ -16,6 +16,7 @@ from rich.table import Table
 
 from .agent import AgentResult, AuthError, run_agent, url_to_folder_name
 from .anonymizer import run_anonymizer
+from .backends import BackendError, check_backend, effective_model
 from .cloner import CloneError, checkout_latest_branch, cleanup_repo, clone_repo, rewrite_url
 from .config import Settings, default_meta_dir
 from .identity import collect_repo_identity, write_repo_identity
@@ -143,7 +144,7 @@ def _result_failure(result: AgentResult, settings: Settings) -> tuple[str, str] 
     """(stage, message) when the agent result must be rejected, else None.
 
     The primary-language share is a HARD requirement only when the language
-    was forced via --primary-language (the redo-rejected-samples flow); for
+    was forced via --primary-language (the forced-language rerun); for
     auto-detected primaries it is a soft goal enforced by prompts/nudges only.
     """
     if result.total_loc == 0:
@@ -159,6 +160,24 @@ def _result_failure(result: AgentResult, settings: Settings) -> tuple[str, str] 
                 f"({int(share * 100)}%) below the {settings.primary_share_min:.0%} minimum",
             )
     return None
+
+
+def _apply_backend(settings: Settings, backend: Optional[str]) -> None:
+    if backend is None:
+        return
+    if backend not in ("openrouter", "claude", "codex"):
+        raise typer.BadParameter(
+            f"unknown backend {backend!r}; use openrouter, claude or codex", param_hint="--backend"
+        )
+    settings.agent_backend = backend
+
+
+def _preflight(settings: Settings) -> None:
+    try:
+        check_backend(settings)
+    except BackendError as error:
+        console.print(f"[red]{error}[/red]")
+        raise typer.Exit(1) from error
 
 
 def _validate_primary_language(value: Optional[str]) -> Optional[str]:
@@ -279,7 +298,7 @@ async def _process_repo(
 
             _log_clone_diagnostics(repo_name, clone_dest)
             stage = "agent"
-            logger.info(f"[{repo_name}] starting agent ({settings.agent_model})...")
+            logger.info(f"[{repo_name}] starting agent ({effective_model(settings)})...")
             result = await run_agent(
                 repo_path=clone_dest,
                 repo_url=url,
@@ -333,7 +352,7 @@ async def _process_repo(
             append_jsonl_with_meta(
                 result,
                 jsonl_path,
-                model=settings.agent_model,
+                model=effective_model(settings),
                 commit_sha=commit_sha,
             )
 
@@ -366,6 +385,7 @@ async def _process_repo(
         except AuthError as e:
             logger.critical(f"Auth error: {e}")
             _write_error(errors_path, url, stage, str(e))
+            console.print(f"[red]Stopped: {e}[/red]\nDetails: {errors_path} and {errors_path.parent / 'run.log'}")
             raise typer.Exit(1)
 
         except CloneError as e:
@@ -398,6 +418,11 @@ def run(
     ssh_port: Optional[int] = typer.Option(
         None, help="Non-standard SSH port of your git server (used with --url-scheme ssh)"
     ),
+    backend: Optional[str] = typer.Option(
+        None,
+        "--backend",
+        help="Sampling backend: openrouter|claude|codex (default: AGENT_BACKEND, else openrouter)",
+    ),
     primary_language: Optional[str] = typer.Option(
         None,
         "--primary-language",
@@ -416,10 +441,13 @@ def run(
 
     if workers:
         settings.clone_workers = workers
+    _apply_backend(settings, backend)
     canonical_lang = _validate_primary_language(primary_language)
     if canonical_lang:
         settings.primary_language_override = canonical_lang
 
+    if not dry_run:
+        _preflight(settings)
     repos = _load_repos(repos_file)
     # The manifest and error log carry real repo URLs and paths — meta dir.
     jsonl_path = meta_dir / "samples.jsonl"
@@ -435,7 +463,7 @@ def run(
 
     logger.info(
         f"Processing {len(repos)} repos | "
-        f"workers={settings.clone_workers} | model={settings.agent_model}"
+        f"workers={settings.clone_workers} | model={effective_model(settings)}"
     )
 
     results = asyncio.run(
@@ -455,10 +483,10 @@ def pack_samples(
         Path("./repo_samples.zip"),
         "--archive",
         "-a",
-        help="ZIP archive to create for CRM upload",
+        help="ZIP archive to create for upload to the partner portal",
     ),
 ) -> None:
-    """Build the ZIP archive accepted by the partner CRM cabinet."""
+    """Build the ZIP archive accepted by the partner portal."""
     try:
         count = build_samples_archive(output, archive)
     except ValueError as error:
@@ -546,6 +574,11 @@ def show_sample(
     ssh_port: Optional[int] = typer.Option(
         None, help="Non-standard SSH port of your git server (used with --url-scheme ssh)"
     ),
+    backend: Optional[str] = typer.Option(
+        None,
+        "--backend",
+        help="Sampling backend: openrouter|claude|codex (default: AGENT_BACKEND, else openrouter)",
+    ),
     primary_language: Optional[str] = typer.Option(
         None,
         "--primary-language",
@@ -558,10 +591,12 @@ def show_sample(
     _setup_logging(default_meta_dir(output))
     _migrate_root_meta_files(output, default_meta_dir(output))
     settings = Settings()
+    _apply_backend(settings, backend)
     canonical_lang = _validate_primary_language(primary_language)
     if canonical_lang:
         settings.primary_language_override = canonical_lang
 
+    _preflight(settings)
     repo_name = repo_url.rstrip("/").split("/")[-1]
     clone_dest = Path(settings.clone_dir) / url_to_folder_name(repo_url)
 
@@ -636,6 +671,10 @@ def show_sample(
                     f"iterations: {result.agent_iterations} | bash calls: {result.bash_calls}"
                     f"{primary_note}"
                 )
+            except (AuthError, BackendError) as error:
+                logger.critical(f"[{repo_name}] {error}")
+                console.print(f"[red]Stopped: {error}[/red]")
+                raise typer.Exit(1) from error
             finally:
                 if not keep_clones and clone_dest.exists():
                     cleanup_repo(clone_dest)

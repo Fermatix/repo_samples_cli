@@ -2,7 +2,9 @@ import json
 import tempfile
 from pathlib import Path
 
-from repo_sampler.main import _load_processed, _load_repos, _migrate_root_meta_files
+from typer.testing import CliRunner
+
+from repo_sampler.main import app, _load_processed, _load_repos, _migrate_root_meta_files
 
 
 def _write_jsonl(path: Path, records: list[dict]) -> None:
@@ -282,3 +284,133 @@ def test_result_failure_soft_share_not_rejected():
         primary="JavaScript", forced=False,
     )
     assert _result_failure(result, settings) is None
+
+
+def test_run_rejects_unknown_backend(tmp_path):
+    repos = tmp_path / "repos.txt"
+    repos.write_text("https://git.example.com/group/repo\n")
+    result = CliRunner().invoke(
+        app, ["run", str(repos), "--backend", "nope", "--output", str(tmp_path / "out")]
+    )
+    assert result.exit_code == 2
+    assert "--backend" in result.output or "nope" in result.output
+
+
+def _capture_preflight(monkeypatch, seen):
+    from repo_sampler.backends import BackendError
+
+    def fake(settings):
+        seen.append(settings.agent_backend)
+        raise BackendError("preflight says no")
+
+    monkeypatch.setattr("repo_sampler.main.check_backend", fake)
+
+
+def test_run_backend_option_beats_env_and_preflight_failure_exits_1(tmp_path, monkeypatch):
+    seen = []
+    _capture_preflight(monkeypatch, seen)
+    monkeypatch.setenv("AGENT_BACKEND", "codex")
+    repos = tmp_path / "repos.txt"
+    repos.write_text("https://git.example.com/group/repo\n")
+    result = CliRunner().invoke(
+        app, ["run", str(repos), "--backend", "claude", "--output", str(tmp_path / "out")]
+    )
+    assert seen == ["claude"]
+    assert result.exit_code == 1
+    assert "preflight says no" in result.output
+
+
+def test_show_sample_backend_option_beats_env(tmp_path, monkeypatch):
+    seen = []
+    _capture_preflight(monkeypatch, seen)
+    monkeypatch.setenv("AGENT_BACKEND", "codex")
+    result = CliRunner().invoke(
+        app,
+        ["show-sample", "https://git.example.com/group/repo", "--backend", "claude",
+         "--output", str(tmp_path / "out")],
+    )
+    assert seen == ["claude"]
+    assert result.exit_code == 1
+    assert "preflight says no" in result.output
+
+
+def test_dry_run_skips_backend_check(tmp_path, monkeypatch):
+    def fail(settings):
+        raise AssertionError("check_backend must not run for --dry-run")
+
+    monkeypatch.setattr("repo_sampler.main.check_backend", fail)
+    monkeypatch.setattr("repo_sampler.main._run_all", lambda *a, **k: _noop())
+    monkeypatch.setenv("OPENROUTER_API_KEY", "")
+    repos = tmp_path / "repos.txt"
+    repos.write_text("https://git.example.com/group/repo\n")
+    result = CliRunner().invoke(
+        app, ["run", str(repos), "--dry-run", "--output", str(tmp_path / "out")]
+    )
+    assert result.exit_code == 0, result.output
+
+
+async def _noop():
+    return []
+
+
+def _stub_clone_and_failing_agent(monkeypatch, tmp_path, error):
+    from repo_sampler import main as main_mod
+
+    async def fake_clone(u, dest, timeout=0):
+        dest.mkdir(parents=True, exist_ok=True)
+
+    async def fake_branch(path):
+        return None
+
+    async def fake_run_agent(**kwargs):
+        raise error
+
+    monkeypatch.setattr(main_mod, "check_backend", lambda settings: None)
+    monkeypatch.setattr(main_mod, "clone_repo", fake_clone)
+    monkeypatch.setattr(main_mod, "checkout_latest_branch", fake_branch)
+    monkeypatch.setattr(main_mod, "run_agent", fake_run_agent)
+    monkeypatch.setattr(main_mod, "cleanup_repo", lambda p: None)
+    monkeypatch.setattr(
+        main_mod, "collect_repo_identity", lambda path, repo_url: {"repo_url": repo_url}
+    )
+    monkeypatch.setenv("CLONE_DIR", str(tmp_path / "clones"))
+
+
+def test_run_auth_failure_prints_error_and_log_path(tmp_path, monkeypatch):
+    from repo_sampler.backends import AuthError
+
+    _stub_clone_and_failing_agent(monkeypatch, tmp_path, AuthError("please sign in again"))
+    repos = tmp_path / "repos.txt"
+    repos.write_text("https://git.example.com/group/repo\n")
+    out = tmp_path / "out"
+    result = CliRunner().invoke(app, ["run", str(repos), "--output", str(out)])
+    assert result.exit_code == 1
+    assert "please sign in again" in result.output
+    assert "errors.jsonl" in result.output
+    assert "run.log" in result.output
+
+
+def test_show_sample_auth_failure_prints_one_line_no_traceback(tmp_path, monkeypatch):
+    from repo_sampler.backends import AuthError
+
+    _stub_clone_and_failing_agent(monkeypatch, tmp_path, AuthError("please sign in again"))
+    result = CliRunner().invoke(
+        app, ["show-sample", "https://git.example.com/group/repo", "--output", str(tmp_path / "out")]
+    )
+    assert result.exit_code == 1
+    assert "please sign in again" in result.output
+    assert "Traceback" not in result.output
+    assert isinstance(result.exception, SystemExit)
+
+
+def test_show_sample_backend_error_prints_one_line_no_traceback(tmp_path, monkeypatch):
+    from repo_sampler.backends import BackendError
+
+    _stub_clone_and_failing_agent(monkeypatch, tmp_path, BackendError("cli exploded"))
+    result = CliRunner().invoke(
+        app, ["show-sample", "https://git.example.com/group/repo", "--output", str(tmp_path / "out")]
+    )
+    assert result.exit_code == 1
+    assert "cli exploded" in result.output
+    assert "Traceback" not in result.output
+    assert isinstance(result.exception, SystemExit)
